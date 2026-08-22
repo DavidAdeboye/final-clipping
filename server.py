@@ -183,8 +183,7 @@ def get_clip(job_id: str, filename: str):
     path = os.path.join(core.JOBS_ROOT, job_id, filename)
     if not os.path.isfile(path):
         raise HTTPException(404, "clip not found")
-    return FileResponse(path, media_type="video/mp4", filename=filename)
-
+    return FileResponse(path, media_type="video/mp4")
 
 @app.get("/", response_class=HTMLResponse)
 def index():

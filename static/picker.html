@@ -3,133 +3,508 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Viral Clipper</title>
+<title>AutoClip · Studio</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
 <style>
-  :root { color-scheme: dark; }
-  * { box-sizing: border-box; }
-  body {
-    margin: 0; padding: 16px; font-family: -apple-system, system-ui, sans-serif;
-    background: #0b0b0f; color: #eee; max-width: 640px; margin-inline: auto;
-  }
-  h1 { font-size: 1.15rem; margin: 0 0 16px; }
-  label { display: block; font-size: 0.85rem; color: #aaa; margin: 12px 0 4px; }
-  input[type=text], select {
-    width: 100%; padding: 10px; font-size: 1rem; border-radius: 8px;
-    border: 1px solid #333; background: #16161d; color: #eee;
-  }
-  button {
-    margin-top: 16px; width: 100%; padding: 12px; font-size: 1rem; font-weight: 600;
-    border-radius: 8px; border: none; background: #5b5bf6; color: white; cursor: pointer;
-  }
-  button:disabled { opacity: 0.5; }
-  button.secondary { background: #2a2a35; }
-  #status { margin-top: 16px; font-size: 0.9rem; color: #9aa; white-space: pre-wrap; }
-  #picker { display: none; margin-top: 20px; }
-  #question { font-size: 0.95rem; margin-bottom: 10px; }
-  .frame-wrap { position: relative; width: 100%; touch-action: none; }
-  .frame-wrap img { width: 100%; display: block; border-radius: 8px; }
-  canvas { position: absolute; top: 0; left: 0; width: 100%; height: 100%; cursor: crosshair; }
-  #frameTabs { display: flex; gap: 6px; margin-bottom: 8px; }
-  #frameTabs button { margin: 0; padding: 6px 10px; font-size: 0.8rem; width: auto; background: #2a2a35; }
-  #frameTabs button.active { background: #5b5bf6; }
-  #clips a {
-    display: block; padding: 10px; margin-top: 8px; background: #16161d;
-    border-radius: 8px; color: #9ad; text-decoration: none;
-  }
-  .hint { font-size: 0.8rem; color: #777; margin-top: 8px; }
+:root {
+  --bg: #07080a;
+  --panel: #0e1015;
+  --panel-elevated: #14171e;
+  --border: #1e222b;
+  --border-focus: #343b49;
+  --text-primary: #f3f4f6;
+  --text-muted: #8b92a1;
+  --text-dim: #545b69;
+  --accent: #d7ff63;
+  --accent-ink: #0d1204;
+  --accent-glow: rgba(215, 255, 99, 0.16);
+  --danger: #ef4444;
+  --radius: 14px;
+  --radius-sm: 8px;
+  --font-sans: 'Plus Jakarta Sans', system-ui, sans-serif;
+  --font-mono: 'JetBrains Mono', monospace;
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  min-height: 100vh;
+  background-color: var(--bg);
+  color: var(--text-primary);
+  font-family: var(--font-sans);
+  background-image: 
+    radial-gradient(ellipse 60% 40% at 50% -20%, rgba(215, 255, 99, 0.04), transparent),
+    radial-gradient(ellipse 80% 50% at 100% 50%, rgba(255, 255, 255, 0.015), transparent);
+}
+
+.app-shell { display: grid; grid-template-columns: 72px 1fr; min-height: 100vh; }
+
+.sidebar {
+  border-right: 1px solid var(--border);
+  background: rgba(14, 16, 21, 0.7);
+  backdrop-filter: blur(16px);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 24px 0;
+  position: sticky;
+  top: 0;
+  height: 100vh;
+  z-index: 10;
+}
+
+.logo {
+  width: 38px;
+  height: 38px;
+  border-radius: 10px;
+  background: var(--accent);
+  color: var(--accent-ink);
+  display: grid;
+  place-items: center;
+  font-weight: 700;
+  font-size: 16px;
+  box-shadow: 0 0 20px var(--accent-glow);
+}
+
+.nav { display: flex; flex-direction: column; gap: 8px; margin-top: 40px; }
+.nav-btn {
+  width: 42px;
+  height: 42px;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--text-muted);
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+.nav-btn:hover, .nav-btn.active {
+  background: var(--panel-elevated);
+  border-color: var(--border);
+  color: var(--text-primary);
+}
+
+.main { min-width: 0; }
+.topbar {
+  height: 64px;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 32px;
+  background: rgba(7, 8, 10, 0.8);
+  backdrop-filter: blur(12px);
+  position: sticky;
+  top: 0;
+  z-index: 9;
+}
+.breadcrumbs { display: flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 500; }
+.breadcrumbs span { color: var(--text-dim); }
+.status-pill {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--panel);
+  font: 500 11px var(--font-mono);
+  color: var(--text-muted);
+}
+.status-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 8px var(--accent);
+}
+
+.content { max-width: 1360px; margin: 0 auto; padding: 40px 32px 80px; }
+.hero { margin-bottom: 32px; }
+.hero h1 { font-size: 32px; font-weight: 700; letter-spacing: -0.03em; }
+.hero p { margin-top: 8px; color: var(--text-muted); font-size: 14px; }
+
+.workspace { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(320px, 0.8fr); gap: 24px; align-items: start; }
+
+.card {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+  margin-bottom: 20px;
+}
+.card-head {
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+.card-title { font-size: 13px; font-weight: 600; letter-spacing: -0.01em; display: flex; align-items: center; gap: 8px; }
+.badge { font: 600 10px var(--font-mono); padding: 3px 6px; border-radius: 4px; background: var(--panel-elevated); color: var(--text-muted); border: 1px solid var(--border); }
+.card-body { padding: 20px; }
+
+.field-label { display: block; font: 500 11px var(--font-mono); color: var(--text-muted); text-transform: uppercase; margin-bottom: 8px; letter-spacing: 0.05em; }
+
+.input-box {
+  display: flex;
+  align-items: center;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 10px 14px;
+  transition: border-color 0.15s ease;
+}
+.input-box:focus-within { border-color: var(--border-focus); }
+.input-box input {
+  flex: 1;
+  background: transparent;
+  border: none;
+  outline: none;
+  color: var(--text-primary);
+  font: 14px var(--font-sans);
+}
+
+.aspect-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-top: 8px; }
+.aspect-card input { position: absolute; opacity: 0; pointer-events: none; }
+.aspect-card label {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg);
+  padding: 14px 12px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+.aspect-card label:hover { background: var(--panel-elevated); border-color: var(--border-focus); }
+.aspect-card input:checked + label {
+  background: var(--panel-elevated);
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent);
+}
+.aspect-card strong { font-size: 12px; font-weight: 600; }
+.aspect-card span { font: 10px var(--font-mono); color: var(--text-muted); }
+
+.select-box {
+  width: 100%;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text-primary);
+  padding: 12px;
+  font: 13px var(--font-sans);
+  outline: none;
+}
+.select-box:focus { border-color: var(--border-focus); }
+
+.btn-primary {
+  width: 100%;
+  margin-top: 20px;
+  background: var(--accent);
+  color: var(--accent-ink);
+  border: none;
+  border-radius: var(--radius-sm);
+  padding: 12px;
+  font: 700 13px var(--font-sans);
+  cursor: pointer;
+  transition: opacity 0.15s ease, transform 0.15s ease;
+}
+.btn-primary:hover { opacity: 0.95; transform: translateY(-1px); }
+.btn-primary:disabled { opacity: 0.4; cursor: not-allowed; transform: none; }
+
+#status-panel {
+  display: none;
+  margin-bottom: 20px;
+  padding: 14px 18px;
+  border-radius: var(--radius);
+  background: var(--panel);
+  border: 1px solid var(--border);
+  align-items: center;
+  justify-content: space-between;
+}
+.status-meta { font: 11px var(--font-mono); color: var(--text-dim); }
+
+#picker { display: none; }
+.stage-wrap { position: relative; background: #000; border-radius: var(--radius-sm); overflow: hidden; }
+.stage-wrap img { width: 100%; display: block; }
+.stage-wrap canvas { position: absolute; inset: 0; width: 100%; height: 100%; cursor: crosshair; }
+.picker-actions { display: flex; gap: 10px; margin-top: 14px; }
+.btn-secondary {
+  flex: 1;
+  background: var(--panel-elevated);
+  border: 1px solid var(--border);
+  color: var(--text-primary);
+  border-radius: var(--radius-sm);
+  padding: 10px;
+  font: 600 12px var(--font-sans);
+  cursor: pointer;
+}
+
+#clips-wrapper { display: none; }
+.clips-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 16px;
+}
+.clip-card {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+}
+.clip-video-wrap {
+  position: relative;
+  background: #000;
+  border-radius: 6px;
+  overflow: hidden;
+  aspect-ratio: 9 / 16;
+  max-height: 420px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.clip-video-wrap video {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+.clip-info {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-top: 10px;
+}
+.clip-title { font: 11px var(--font-mono); color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 140px; }
+.btn-download {
+  background: var(--accent);
+  color: var(--accent-ink);
+  font: 700 11px var(--font-sans);
+  padding: 6px 12px;
+  border-radius: 6px;
+  text-decoration: none;
+}
+
+@media(max-width: 900px) {
+  .app-shell { grid-template-columns: 1fr; }
+  .sidebar { display: none; }
+  .workspace { grid-template-columns: 1fr; }
+}
 </style>
 </head>
 <body>
-  <h1>Viral Clipper</h1>
 
-  <div id="form">
-    <label>YouTube URL</label>
-    <input type="text" id="url" placeholder="https://youtube.com/watch?v=...">
+<div class="app-shell">
+  <aside class="sidebar">
+    <div class="logo">A</div>
+    <nav class="nav">
+      <button class="nav-btn active">✦</button>
+    </nav>
+  </aside>
 
-    <label>Aspect ratio</label>
-    <select id="aspect">
-      <option value="9:16">9:16 (Shorts / TikTok)</option>
-      <option value="1:1">1:1 (Square)</option>
-      <option value="16:9">16:9 (Landscape)</option>
-    </select>
+  <main class="main">
+    <header class="topbar">
+      <div class="breadcrumbs">
+        <div>AutoClip Studio</div>
+        <span>/</span>
+        <div style="color:var(--text-muted)">Workspace</div>
+      </div>
+      <div class="status-pill">
+        <div class="status-dot"></div>
+        <span>ENGINE ONLINE</span>
+      </div>
+    </header>
 
-    <label>Layout mode</label>
-    <select id="mode">
-      <option value="split">Split (gimbal podcast stack)</option>
-      <option value="cut">Cut (single subject tracking)</option>
-      <option value="speaker_switch">Speaker switch (active-speaker cut)</option>
-      <option value="gaming">Gaming (facecam over gameplay)</option>
-      <option value="gaming_split_noface">Gaming split (no facecam)</option>
-      <option value="reaction">Reaction (PIP over main footage)</option>
-    </select>
+    <div class="content">
+      <div class="hero">
+        <h1>Transform Long Videos into Clips</h1>
+        <p>Intelligent framing, instant transcript parsing, and clean short form rendering.</p>
+      </div>
 
-    <button id="startBtn" onclick="startJob()">Generate clips</button>
-  </div>
+      <div class="workspace">
+        <div>
+          <div class="card" id="config-panel">
+            <div class="card-head">
+              <div class="card-title">Job Configuration</div>
+              <span class="badge">STEP 01</span>
+            </div>
+            <div class="card-body">
+              <label class="field-label">Source URL</label>
+              <div class="input-box">
+                <input type="text" id="url" placeholder="Paste YouTube link here..." autocomplete="off">
+              </div>
 
-  <div id="status"></div>
+              <div style="margin-top: 18px;">
+                <label class="field-label">Output Aspect Ratio</label>
+                <div class="aspect-grid">
+                  <div class="aspect-card">
+                    <input type="radio" name="aspect" id="ar-916" value="9:16" checked>
+                    <label for="ar-916">
+                      <strong>9:16</strong>
+                      <span>Shorts / Reels</span>
+                    </label>
+                  </div>
+                  <div class="aspect-card">
+                    <input type="radio" name="aspect" id="ar-11" value="1:1">
+                    <label for="ar-11">
+                      <strong>1:1</strong>
+                      <span>Square Feed</span>
+                    </label>
+                  </div>
+                  <div class="aspect-card">
+                    <input type="radio" name="aspect" id="ar-169" value="16:9">
+                    <label for="ar-169">
+                      <strong>16:9</strong>
+                      <span>Landscape</span>
+                    </label>
+                  </div>
+                </div>
+              </div>
 
-  <div id="picker">
-    <div id="question"></div>
-    <div id="frameTabs"></div>
-    <div class="frame-wrap">
-      <img id="frameImg" src="">
-      <canvas id="boxCanvas"></canvas>
+              <div style="margin-top: 18px;">
+                <label class="field-label">Layout Engine</label>
+                <select id="mode" class="select-box">
+                  <option value="split">Split Stack (Podcast / Dual Speaker)</option>
+                  <option value="cut">Tracking Crop (Single Speaker Focus)</option>
+                  <option value="speaker_switch">Dynamic Switch (Active Voice Tracking)</option>
+                  <option value="gaming">Gaming PIP (Gameplay + Facecam)</option>
+                  <option value="gaming_split_noface">Gaming Double Cut (Action + HUD)</option>
+                  <option value="reaction">Reaction Stream (Auto Tracked PIP)</option>
+                </select>
+              </div>
+
+              <button id="startBtn" class="btn-primary" onclick="startJob()">Generate Clips</button>
+            </div>
+          </div>
+
+          <div id="status-panel">
+            <div style="font-size: 13px; font-weight: 500;" id="status-text">Ready</div>
+            <div class="status-meta" id="job-id-disp"></div>
+          </div>
+
+          <div class="card" id="picker">
+            <div class="card-head">
+              <div class="card-title">Framing Adjustment</div>
+              <span class="badge" id="question">Select Area</span>
+            </div>
+            <div class="card-body">
+              <div class="stage-wrap">
+                <img id="frameImg" src="" alt="Target Frame">
+                <canvas id="boxCanvas"></canvas>
+              </div>
+              <div class="picker-actions">
+                <button id="noChangeBtn" class="btn-secondary" onclick="submitNoChange()" style="display:none;">Keep Current</button>
+                <button id="submitBoxBtn" class="btn-primary" onclick="submitBox()" style="margin-top:0;" disabled>Apply Framing</button>
+              </div>
+            </div>
+          </div>
+
+          <div class="card" id="clips-wrapper">
+            <div class="card-head">
+              <div class="card-title">Generated Short Clips</div>
+              <span class="badge">OUTPUT</span>
+            </div>
+            <div class="card-body">
+              <div class="clips-grid" id="clips-list"></div>
+            </div>
+          </div>
+        </div>
+
+        <aside>
+          <div class="card">
+            <div class="card-head">
+              <div class="card-title">Processing Specs</div>
+            </div>
+            <div class="card-body" style="font-size: 12px; color: var(--text-muted); line-height: 1.6;">
+              <p>Clips run through Whisper transcription, LLM highlight extraction, and OpenCV/MediaPipe speaker tracking models.</p>
+            </div>
+          </div>
+        </aside>
+      </div>
     </div>
-    <div class="hint">Drag on the image to box the face/facecam. Tap "No change" if a mid-clip prompt asks whether something moved and it didn't.</div>
-    <button id="submitBoxBtn" onclick="submitBox()" disabled>Use this box</button>
-    <button class="secondary" onclick="submitNoChange()" id="noChangeBtn" style="display:none;">No change</button>
-  </div>
-
-  <div id="clips"></div>
+  </main>
+</div>
 
 <script>
 let jobId = null;
 let pollTimer = null;
 let currentFrames = [];
 let currentFrameIdx = 0;
-let box = null; // {x0,y0,x1,y1} in canvas pixel space
+let box = null;
 
-function setStatus(msg) { document.getElementById('status').textContent = msg; }
+function setStatus(msg) {
+  const panel = document.getElementById('status-panel');
+  const txt = document.getElementById('status-text');
+  const jobDisp = document.getElementById('job-id-disp');
+  panel.style.display = 'flex';
+  txt.textContent = msg;
+  jobDisp.textContent = jobId ? `JOB #${jobId.slice(0, 8).toUpperCase()}` : '';
+}
+
+function getSelectedAspect() {
+  const el = document.querySelector('input[name="aspect"]:checked');
+  return el ? el.value : '9:16';
+}
 
 async function startJob() {
   const url = document.getElementById('url').value.trim();
-  if (!url) { setStatus('Enter a YouTube URL first.'); return; }
+  if (!url) {
+    setStatus('Paste a source video URL first');
+    return;
+  }
   document.getElementById('startBtn').disabled = true;
-  setStatus('Starting job...');
+  setStatus('Initializing job...');
 
-  const res = await fetch('/jobs', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      youtube_url: url,
-      aspect_ratio: document.getElementById('aspect').value,
-      mode: document.getElementById('mode').value,
-    }),
-  });
-  const data = await res.json();
-  jobId = data.job_id;
-  poll();
+  try {
+    const res = await fetch('/jobs', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        youtube_url: url,
+        aspect_ratio: getSelectedAspect(),
+        mode: document.getElementById('mode').value,
+      }),
+    });
+    const data = await res.json();
+    jobId = data.job_id;
+    poll();
+  } catch (e) {
+    setStatus('Connection error: ' + e.message);
+    document.getElementById('startBtn').disabled = false;
+  }
 }
 
 async function poll() {
   if (!jobId) return;
-  const res = await fetch(`/jobs/${jobId}`);
-  const job = await res.json();
+  try {
+    const res = await fetch(`/jobs/${jobId}`);
+    const job = await res.json();
 
-  if (job.status === 'queued' || job.status === 'running') {
-    setStatus('Working... (' + job.status + ')');
-    document.getElementById('picker').style.display = 'none';
-    pollTimer = setTimeout(poll, 2000);
-  } else if (job.status === 'awaiting_input') {
-    setStatus('Needs your input:');
-    showPicker(job.question, job.frames);
-  } else if (job.status === 'done') {
-    setStatus('Done!');
-    document.getElementById('picker').style.display = 'none';
-    showClips(job.clips);
-  } else if (job.status === 'error') {
-    setStatus('Error: ' + job.error);
-    document.getElementById('picker').style.display = 'none';
+    if (job.status === 'queued' || job.status === 'running') {
+      setStatus(job.status === 'queued' ? 'Queued in pipeline...' : 'Processing audio and video frames...');
+      document.getElementById('picker').style.display = 'none';
+      pollTimer = setTimeout(poll, 2000);
+    } else if (job.status === 'awaiting_input') {
+      setStatus('Action Required: Adjust Frame');
+      showPicker(job.question, job.frames);
+    } else if (job.status === 'done') {
+      setStatus('Render complete.');
+      document.getElementById('startBtn').disabled = false;
+      document.getElementById('picker').style.display = 'none';
+      showClips(job.clips);
+    } else if (job.status === 'error') {
+      setStatus('Failed: ' + job.error);
+      document.getElementById('startBtn').disabled = false;
+      document.getElementById('picker').style.display = 'none';
+    }
+  } catch (e) {
+    pollTimer = setTimeout(poll, 3000);
   }
 }
 
@@ -143,29 +518,11 @@ function showPicker(question, frames) {
   const isCutReprompt = /no change|leave blank/i.test(question);
   document.getElementById('noChangeBtn').style.display = isCutReprompt ? 'block' : 'none';
 
-  const tabs = document.getElementById('frameTabs');
-  tabs.innerHTML = '';
-  frames.forEach((f, i) => {
-    const b = document.createElement('button');
-    b.textContent = 'Frame ' + (i + 1);
-    b.className = i === 0 ? 'active' : '';
-    b.onclick = () => selectFrame(i);
-    tabs.appendChild(b);
-  });
-
-  selectFrame(0);
-}
-
-function selectFrame(i) {
-  currentFrameIdx = i;
-  [...document.getElementById('frameTabs').children].forEach((b, idx) => {
-    b.className = idx === i ? 'active' : '';
-  });
-  const img = document.getElementById('frameImg');
-  img.onload = () => setupCanvas();
-  img.src = currentFrames[i];
-  box = null;
-  document.getElementById('submitBoxBtn').disabled = true;
+  if (frames.length > 0) {
+    const img = document.getElementById('frameImg');
+    img.onload = () => setupCanvas();
+    img.src = frames[0];
+  }
 }
 
 function setupCanvas() {
@@ -186,31 +543,18 @@ function setupCanvas() {
 
   function redraw(x0, y0, x1, y1) {
     ctx.clearRect(0, 0, canvas.width, canvas.height);
-    ctx.strokeStyle = '#5b5bf6';
-    ctx.lineWidth = 3;
-    ctx.strokeRect(Math.min(x0, x1), Math.min(y0, y1), Math.abs(x1 - x0), Math.abs(y1 - y0));
-    ctx.fillStyle = 'rgba(91,91,246,0.15)';
-    ctx.fillRect(Math.min(x0, x1), Math.min(y0, y1), Math.abs(x1 - x0), Math.abs(y1 - y0));
+    const rx = Math.min(x0, x1), ry = Math.min(y0, y1);
+    const rw = Math.abs(x1 - x0), rh = Math.abs(y1 - y0);
+    ctx.strokeStyle = '#d7ff63';
+    ctx.lineWidth = 2;
+    ctx.strokeRect(rx, ry, rw, rh);
+    ctx.fillStyle = 'rgba(215, 255, 99, 0.15)';
+    ctx.fillRect(rx, ry, rw, rh);
   }
 
-  function start(e) {
-    e.preventDefault();
-    drawing = true;
-    const p = pos(e);
-    box = { x0: p.x, y0: p.y, x1: p.x, y1: p.y };
-  }
-  function move(e) {
-    if (!drawing) return;
-    e.preventDefault();
-    const p = pos(e);
-    box.x1 = p.x; box.y1 = p.y;
-    redraw(box.x0, box.y0, box.x1, box.y1);
-  }
-  function end(e) {
-    if (!drawing) return;
-    drawing = false;
-    document.getElementById('submitBoxBtn').disabled = !box || (Math.abs(box.x1 - box.x0) < 5);
-  }
+  function start(e) { e.preventDefault(); drawing = true; const p = pos(e); box = { x0: p.x, y0: p.y, x1: p.x, y1: p.y }; }
+  function move(e) { if (!drawing) return; e.preventDefault(); const p = pos(e); box.x1 = p.x; box.y1 = p.y; redraw(box.x0, box.y0, box.x1, box.y1); }
+  function end() { if (!drawing) return; drawing = false; document.getElementById('submitBoxBtn').disabled = !box || (Math.abs(box.x1 - box.x0) < 6); }
 
   canvas.onmousedown = start; canvas.onmousemove = move; canvas.onmouseup = end;
   canvas.ontouchstart = start; canvas.ontouchmove = move; canvas.ontouchend = end;
@@ -228,9 +572,7 @@ async function submitBox() {
   await sendAnswer(`${xf},${yf},${wf},${hf}`);
 }
 
-async function submitNoChange() {
-  await sendAnswer('');
-}
+async function submitNoChange() { await sendAnswer(''); }
 
 async function sendAnswer(answer) {
   document.getElementById('submitBoxBtn').disabled = true;
@@ -239,21 +581,39 @@ async function sendAnswer(answer) {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ answer }),
   });
-  setStatus('Submitted. Resuming...');
+  setStatus('Resuming render pass...');
   document.getElementById('picker').style.display = 'none';
   poll();
 }
 
 function showClips(clips) {
-  const el = document.getElementById('clips');
-  el.innerHTML = '<h2 style="font-size:1rem;">Your clips</h2>';
-  clips.forEach((c, i) => {
-    const a = document.createElement('a');
-    a.href = c;
-    a.textContent = 'Download clip ' + (i + 1);
-    a.download = '';
-    el.appendChild(a);
+  const wrapper = document.getElementById('clips-wrapper');
+  const target = document.getElementById('clips-list');
+  target.innerHTML = '';
+
+  if (!clips || clips.length === 0) {
+    wrapper.style.display = 'none';
+    return;
+  }
+
+  clips.forEach((url, i) => {
+    const rawName = url.split('/').pop();
+    const card = document.createElement('div');
+    card.className = 'clip-card';
+    card.innerHTML = `
+      <div class="clip-video-wrap">
+        <video src="${url}" controls playsinline preload="metadata"></video>
+      </div>
+      <div class="clip-info">
+        <div class="clip-title" title="${rawName}">Clip 0${i + 1}</div>
+        <a href="${url}" download="${rawName}" class="btn-download">Download</a>
+      </div>
+    `;
+    target.appendChild(card);
   });
+
+  wrapper.style.display = 'block';
+  wrapper.scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
 </script>
 </body>
