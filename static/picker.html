@@ -1,0 +1,260 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Viral Clipper</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 16px; font-family: -apple-system, system-ui, sans-serif;
+    background: #0b0b0f; color: #eee; max-width: 640px; margin-inline: auto;
+  }
+  h1 { font-size: 1.15rem; margin: 0 0 16px; }
+  label { display: block; font-size: 0.85rem; color: #aaa; margin: 12px 0 4px; }
+  input[type=text], select {
+    width: 100%; padding: 10px; font-size: 1rem; border-radius: 8px;
+    border: 1px solid #333; background: #16161d; color: #eee;
+  }
+  button {
+    margin-top: 16px; width: 100%; padding: 12px; font-size: 1rem; font-weight: 600;
+    border-radius: 8px; border: none; background: #5b5bf6; color: white; cursor: pointer;
+  }
+  button:disabled { opacity: 0.5; }
+  button.secondary { background: #2a2a35; }
+  #status { margin-top: 16px; font-size: 0.9rem; color: #9aa; white-space: pre-wrap; }
+  #picker { display: none; margin-top: 20px; }
+  #question { font-size: 0.95rem; margin-bottom: 10px; }
+  .frame-wrap { position: relative; width: 100%; touch-action: none; }
+  .frame-wrap img { width: 100%; display: block; border-radius: 8px; }
+  canvas { position: absolute; top: 0; left: 0; width: 100%; height: 100%; cursor: crosshair; }
+  #frameTabs { display: flex; gap: 6px; margin-bottom: 8px; }
+  #frameTabs button { margin: 0; padding: 6px 10px; font-size: 0.8rem; width: auto; background: #2a2a35; }
+  #frameTabs button.active { background: #5b5bf6; }
+  #clips a {
+    display: block; padding: 10px; margin-top: 8px; background: #16161d;
+    border-radius: 8px; color: #9ad; text-decoration: none;
+  }
+  .hint { font-size: 0.8rem; color: #777; margin-top: 8px; }
+</style>
+</head>
+<body>
+  <h1>Viral Clipper</h1>
+
+  <div id="form">
+    <label>YouTube URL</label>
+    <input type="text" id="url" placeholder="https://youtube.com/watch?v=...">
+
+    <label>Aspect ratio</label>
+    <select id="aspect">
+      <option value="9:16">9:16 (Shorts / TikTok)</option>
+      <option value="1:1">1:1 (Square)</option>
+      <option value="16:9">16:9 (Landscape)</option>
+    </select>
+
+    <label>Layout mode</label>
+    <select id="mode">
+      <option value="split">Split (gimbal podcast stack)</option>
+      <option value="cut">Cut (single subject tracking)</option>
+      <option value="speaker_switch">Speaker switch (active-speaker cut)</option>
+      <option value="gaming">Gaming (facecam over gameplay)</option>
+      <option value="gaming_split_noface">Gaming split (no facecam)</option>
+      <option value="reaction">Reaction (PIP over main footage)</option>
+    </select>
+
+    <button id="startBtn" onclick="startJob()">Generate clips</button>
+  </div>
+
+  <div id="status"></div>
+
+  <div id="picker">
+    <div id="question"></div>
+    <div id="frameTabs"></div>
+    <div class="frame-wrap">
+      <img id="frameImg" src="">
+      <canvas id="boxCanvas"></canvas>
+    </div>
+    <div class="hint">Drag on the image to box the face/facecam. Tap "No change" if a mid-clip prompt asks whether something moved and it didn't.</div>
+    <button id="submitBoxBtn" onclick="submitBox()" disabled>Use this box</button>
+    <button class="secondary" onclick="submitNoChange()" id="noChangeBtn" style="display:none;">No change</button>
+  </div>
+
+  <div id="clips"></div>
+
+<script>
+let jobId = null;
+let pollTimer = null;
+let currentFrames = [];
+let currentFrameIdx = 0;
+let box = null; // {x0,y0,x1,y1} in canvas pixel space
+
+function setStatus(msg) { document.getElementById('status').textContent = msg; }
+
+async function startJob() {
+  const url = document.getElementById('url').value.trim();
+  if (!url) { setStatus('Enter a YouTube URL first.'); return; }
+  document.getElementById('startBtn').disabled = true;
+  setStatus('Starting job...');
+
+  const res = await fetch('/jobs', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      youtube_url: url,
+      aspect_ratio: document.getElementById('aspect').value,
+      mode: document.getElementById('mode').value,
+    }),
+  });
+  const data = await res.json();
+  jobId = data.job_id;
+  poll();
+}
+
+async function poll() {
+  if (!jobId) return;
+  const res = await fetch(`/jobs/${jobId}`);
+  const job = await res.json();
+
+  if (job.status === 'queued' || job.status === 'running') {
+    setStatus('Working... (' + job.status + ')');
+    document.getElementById('picker').style.display = 'none';
+    pollTimer = setTimeout(poll, 2000);
+  } else if (job.status === 'awaiting_input') {
+    setStatus('Needs your input:');
+    showPicker(job.question, job.frames);
+  } else if (job.status === 'done') {
+    setStatus('Done!');
+    document.getElementById('picker').style.display = 'none';
+    showClips(job.clips);
+  } else if (job.status === 'error') {
+    setStatus('Error: ' + job.error);
+    document.getElementById('picker').style.display = 'none';
+  }
+}
+
+function showPicker(question, frames) {
+  document.getElementById('picker').style.display = 'block';
+  document.getElementById('question').textContent = question;
+  currentFrames = frames;
+  currentFrameIdx = 0;
+  box = null;
+
+  const isCutReprompt = /no change|leave blank/i.test(question);
+  document.getElementById('noChangeBtn').style.display = isCutReprompt ? 'block' : 'none';
+
+  const tabs = document.getElementById('frameTabs');
+  tabs.innerHTML = '';
+  frames.forEach((f, i) => {
+    const b = document.createElement('button');
+    b.textContent = 'Frame ' + (i + 1);
+    b.className = i === 0 ? 'active' : '';
+    b.onclick = () => selectFrame(i);
+    tabs.appendChild(b);
+  });
+
+  selectFrame(0);
+}
+
+function selectFrame(i) {
+  currentFrameIdx = i;
+  [...document.getElementById('frameTabs').children].forEach((b, idx) => {
+    b.className = idx === i ? 'active' : '';
+  });
+  const img = document.getElementById('frameImg');
+  img.onload = () => setupCanvas();
+  img.src = currentFrames[i];
+  box = null;
+  document.getElementById('submitBoxBtn').disabled = true;
+}
+
+function setupCanvas() {
+  const img = document.getElementById('frameImg');
+  const canvas = document.getElementById('boxCanvas');
+  canvas.width = img.clientWidth;
+  canvas.height = img.clientHeight;
+  const ctx = canvas.getContext('2d');
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+  let drawing = false;
+
+  function pos(e) {
+    const rect = canvas.getBoundingClientRect();
+    const p = e.touches ? e.touches[0] : e;
+    return { x: p.clientX - rect.left, y: p.clientY - rect.top };
+  }
+
+  function redraw(x0, y0, x1, y1) {
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.strokeStyle = '#5b5bf6';
+    ctx.lineWidth = 3;
+    ctx.strokeRect(Math.min(x0, x1), Math.min(y0, y1), Math.abs(x1 - x0), Math.abs(y1 - y0));
+    ctx.fillStyle = 'rgba(91,91,246,0.15)';
+    ctx.fillRect(Math.min(x0, x1), Math.min(y0, y1), Math.abs(x1 - x0), Math.abs(y1 - y0));
+  }
+
+  function start(e) {
+    e.preventDefault();
+    drawing = true;
+    const p = pos(e);
+    box = { x0: p.x, y0: p.y, x1: p.x, y1: p.y };
+  }
+  function move(e) {
+    if (!drawing) return;
+    e.preventDefault();
+    const p = pos(e);
+    box.x1 = p.x; box.y1 = p.y;
+    redraw(box.x0, box.y0, box.x1, box.y1);
+  }
+  function end(e) {
+    if (!drawing) return;
+    drawing = false;
+    document.getElementById('submitBoxBtn').disabled = !box || (Math.abs(box.x1 - box.x0) < 5);
+  }
+
+  canvas.onmousedown = start; canvas.onmousemove = move; canvas.onmouseup = end;
+  canvas.ontouchstart = start; canvas.ontouchmove = move; canvas.ontouchend = end;
+}
+
+async function submitBox() {
+  if (!box) return;
+  const canvas = document.getElementById('boxCanvas');
+  const x0 = Math.min(box.x0, box.x1), y0 = Math.min(box.y0, box.y1);
+  const w = Math.abs(box.x1 - box.x0), h = Math.abs(box.y1 - box.y0);
+  const xf = (x0 / canvas.width).toFixed(4);
+  const yf = (y0 / canvas.height).toFixed(4);
+  const wf = (w / canvas.width).toFixed(4);
+  const hf = (h / canvas.height).toFixed(4);
+  await sendAnswer(`${xf},${yf},${wf},${hf}`);
+}
+
+async function submitNoChange() {
+  await sendAnswer('');
+}
+
+async function sendAnswer(answer) {
+  document.getElementById('submitBoxBtn').disabled = true;
+  await fetch(`/jobs/${jobId}/respond`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ answer }),
+  });
+  setStatus('Submitted. Resuming...');
+  document.getElementById('picker').style.display = 'none';
+  poll();
+}
+
+function showClips(clips) {
+  const el = document.getElementById('clips');
+  el.innerHTML = '<h2 style="font-size:1rem;">Your clips</h2>';
+  clips.forEach((c, i) => {
+    const a = document.createElement('a');
+    a.href = c;
+    a.textContent = 'Download clip ' + (i + 1);
+    a.download = '';
+    el.appendChild(a);
+  });
+}
+</script>
+</body>
+</html>

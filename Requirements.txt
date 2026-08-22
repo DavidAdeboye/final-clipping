@@ -1,0 +1,9 @@
+fastapi
+uvicorn[standard]
+pydantic
+opencv-contrib-python
+numpy
+mediapipe
+youtube-transcript-api
+groq
+google-genai
