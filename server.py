@@ -79,18 +79,74 @@ def _run_job(job: Job, youtube_url: str, aspect_ratio: str, mode: str):
 class StartJobRequest(BaseModel):
     youtube_url: str
     aspect_ratio: str = "9:16"
-    mode: str = "cut"
+    mode: str = "split"
+    client_id: Optional[str] = None # Added field
 
 @app.post("/jobs")
 def start_job(req: StartJobRequest):
     job_id = str(uuid.uuid4())
     job = Job(job_id)
     JOBS[job_id] = job
+    
+    # Save client_id to metadata immediately
+    job_dir = os.path.join(core.JOBS_ROOT, job_id)
+    os.makedirs(job_dir, exist_ok=True)
+    meta = {
+        "job_id": job_id,
+        "client_id": req.client_id,
+        "created_at": time.time()
+    }
+    with open(os.path.join(job_dir, core.JOB_METADATA_FILENAME), "w") as f:
+        json.dump(meta, f)
+
     job.thread = threading.Thread(
         target=_run_job, args=(job, req.youtube_url, req.aspect_ratio, req.mode), daemon=True
     )
     job.thread.start()
     return {"job_id": job_id}
+
+@app.get("/projects")
+def list_projects(client_id: Optional[str] = None):
+    projects = []
+    if not os.path.isdir(core.JOBS_ROOT):
+        return projects
+
+    for jid in os.listdir(core.JOBS_ROOT):
+        jdir = os.path.join(core.JOBS_ROOT, jid)
+        if not os.path.isdir(jdir):
+            continue
+
+        meta_path = os.path.join(jdir, core.JOB_METADATA_FILENAME)
+        created_at = os.path.getmtime(jdir)
+        job_client = None
+
+        if os.path.exists(meta_path):
+            try:
+                with open(meta_path, "r") as f:
+                    meta = json.load(f)
+                    created_at = meta.get("created_at", created_at)
+                    job_client = meta.get("client_id")
+            except Exception:
+                pass
+
+        # Filter out jobs belonging to other users
+        if client_id and job_client != client_id:
+            continue
+
+        clips = sorted(
+            f for f in os.listdir(jdir) if f.startswith("clip_") and f.endswith(".mp4")
+        )
+        if clips:
+            projects.append({
+                "job_id": jid,
+                "created_at": created_at,
+                "clips_count": len(clips),
+                "first_clip": f"/jobs/{jid}/clip/{clips[0]}",
+                "clips": [f"/jobs/{jid}/clip/{c}" for c in clips]
+            })
+
+    projects.sort(key=lambda p: p["created_at"], reverse=True)
+    return projects
 
 @app.get("/jobs")
 def list_jobs():

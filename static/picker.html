@@ -962,6 +962,77 @@ function appendNewClips(clips, createdAt = Date.now()) {
     wrapper.style.display = 'block';
   }
 }
+
+// Get or create an anonymous client UUID
+function getClientId() {
+  let cid = localStorage.getItem('autoclip_client_id');
+  if (!cid) {
+    cid = 'client_' + crypto.randomUUID();
+    localStorage.setItem('autoclip_client_id', cid);
+  }
+  return cid;
+}
+
+// Save active job ID on start so page refresh doesn't lose progress
+async function startJob() {
+  const url = document.getElementById('url').value.trim();
+  if (!url) return updateStatusUI('Paste a source video URL first');
+
+  document.getElementById('startBtn').disabled = true;
+  renderedClips.clear();
+  document.getElementById('clips-list').innerHTML = '';
+  document.getElementById('clips-wrapper').style.display = 'none';
+
+  jobStartTime = Date.now();
+  jobCreatedAt = Date.now();
+  updateStatusUI('Initializing job...', 'ETA: ~1:30');
+
+  try {
+    const res = await fetch('/jobs', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        youtube_url: url,
+        aspect_ratio: getSelectedAspect(),
+        mode: getSelectedMode(),
+        client_id: getClientId() // Send user's local ID
+      }),
+    });
+    const data = await res.json();
+    jobId = data.job_id;
+    localStorage.setItem('autoclip_active_job', jobId);
+    poll();
+  } catch (e) {
+    updateStatusUI('Connection error: ' + e.message);
+    document.getElementById('startBtn').disabled = false;
+  }
+}
+
+// On page reload: auto-resume polling if a job was active
+window.addEventListener('DOMContentLoaded', () => {
+  const activeJob = localStorage.getItem('autoclip_active_job');
+  if (activeJob) {
+    jobId = activeJob;
+    poll();
+  }
+});
+
+// Update loadLibrary to only ask for THIS client's projects
+async function loadLibrary() {
+  const container = document.getElementById('library-content');
+  container.innerHTML = '<div style="color:var(--text-muted); font-size:13px;">Loading sessions...</div>';
+  try {
+    const res = await fetch(`/projects?client_id=${getClientId()}`);
+    const projects = await res.json();
+    if (!projects || projects.length === 0) {
+      container.innerHTML = '<div style="color:var(--text-muted); font-size:13px;">No past sessions found.</div>';
+      return;
+    }
+    // Render cards normally...
+  } catch (e) {
+    container.innerHTML = `<div style="color:var(--danger); font-size:13px;">Failed to load library: ${e.message}</div>`;
+  }
+}
 </script>
 </body>
 </html>
