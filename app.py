@@ -1,8 +1,18 @@
+import os
+
+# Limit thread concurrency so Render free tier does not crash from OOM
+os.environ["OMP_NUM_THREADS"] = "1"
+os.environ["OPENBLAS_NUM_THREADS"] = "1"
+os.environ["MKL_NUM_THREADS"] = "1"
+os.environ["VECLIB_MAXIMUM_THREADS"] = "1"
+os.environ["NUMEXPR_NUM_THREADS"] = "1"
+
 import cv2
+cv2.setNumThreads(1)
+
 import io
 import json
 import numpy as np
-import os
 import re
 import shutil
 import subprocess
@@ -29,6 +39,7 @@ if os.path.exists(COOKIE_FILE):
 else:
     print("[Warning] No cookies.txt found. Anonymous requests may be blocked.")
 
+# Use the android player client to bypass YouTube datacenter bot verification
 YT_CLIENT_ARGS = YT_EXTRA_ARGS + [
     "--extractor-args", "youtube:player_client=android,web",
     "--no-check-certificates",
@@ -313,7 +324,6 @@ def find_viral_moments(transcript_text: str) -> HighlightResponse:
 
     priority_models = [
         "gemini-flash-latest",
-        "gemini-3.5-flash-lite",
         "gemini-2.5-flash-lite",
         "gemini-pro-latest",
     ]
@@ -454,23 +464,12 @@ def _render_solo_crop(frame, face_centers, smooth_solo_x_ref, width, height, cro
     return cv2.resize(solo_panel, (out_w, out_h))
 
 
-# ---------------------------------------------------------------------------
-# Manual box pickers (terminal-based, no GUI required)
-# ---------------------------------------------------------------------------
-
 def extract_preview_frames(video_path: str, job_dir: str, num_frames: int = 3) -> List[Tuple[float, str]]:
-    """
-    Pull a handful of evenly-spaced frames from the clip as actual image files,
-    so a person can open them (file explorer / any image viewer) and see exactly
-    where the facecam sits at that point in the clip -- instead of guessing blind.
-    Returns a list of (timestamp_seconds, image_path).
-    """
     probe_cmd = ["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", video_path]
     duration_str = subprocess.run(probe_cmd, capture_output=True, text=True).stdout.strip()
     duration = float(duration_str) if duration_str else 30.0
 
     timestamps = [round(duration * (i / (num_frames)), 2) for i in range(num_frames)]
-    # Nudge the first timestamp slightly forward so we don't grab a black/blank frame at t=0.
     timestamps[0] = min(0.5, duration / 4)
 
     frame_paths = []
@@ -501,30 +500,12 @@ def _prompt_for_box_segments(
     video_path: str, job_dir: str, box_label: str,
     prompt_fn: Optional[Callable[[str], str]] = None,
 ) -> List[Tuple[float, Tuple[float, float, float, float]]]:
-    """
-    Generic box picker shared by facecam and reaction-PIP modes. Extracts
-    preview frames, then asks for a box as fractions of frame width/height
-    (0.0-1.0), letting the position change at different timestamps if the box
-    moved mid-clip. Returns a list of (start_seconds, (x, y, w, h)) segments,
-    sorted by time.
-
-    prompt_fn(question) -> answer_string is how the caller is actually asked.
-    Defaults to the builtin input() for terminal/CLI use. A web server can
-    pass a function that instead pauses the job and blocks until the answer
-    arrives over HTTP -- see server.py's WebPrompt.ask.
-    """
     ask = prompt_fn or (lambda q: input(q).strip())
     frames = extract_preview_frames(video_path, job_dir, num_frames=3)
 
     print(f"\n[{box_label} Picker] Preview frames saved -- open these in any image viewer:")
     for ts, path in frames:
         print(f"  t={ts}s -> {path}")
-
-    print(
-        f"\nLook at the frame(s) and enter the {box_label.lower()} box as fractions of the "
-        "frame (x,y,width,height), each between 0.0 and 1.0, measured from the "
-        "top-left corner. Example: 0.0,0.0,0.3,0.3\n"
-    )
 
     segments: List[Tuple[float, Tuple[float, float, float, float]]] = []
     first_box_input = ask(f"{box_label} box for the start of the clip (x,y,w,h): ")
@@ -552,68 +533,13 @@ def _prompt_for_box_segments(
 def prompt_for_facecam_segments(
     video_path: str, job_dir: str, prompt_fn: Optional[Callable[[str], str]] = None,
 ) -> List[Tuple[float, Tuple[float, float, float, float]]]:
-    """
-    Box format: "x,y,w,h" as fractions from the top-left corner, e.g.
-    "0.0,0.0,0.3,0.3" = a box starting at the top-left corner, 30% of the
-    frame's width and height.
-    """
     return _prompt_for_box_segments(video_path, job_dir, box_label="Facecam", prompt_fn=prompt_fn)
-
-
-def prompt_for_reaction_segments(video_path: str, job_dir: str) -> List[Tuple[float, Tuple[float, float, float, float]]]:
-    """
-    Same manual box picker as facecam mode, but framed around a reaction PIP
-    bubble -- typically a small webcam overlay tucked in a corner of the main
-    footage (e.g. someone reacting to a stream/interview). Tell the person to
-    box just the face inside the bubble as tightly as they can, since that
-    region gets upscaled a lot and any extra bubble border/background just
-    makes the crop softer and less framed on the face.
-
-    NOTE: this is the old fully-manual picker (type a box for every position
-    change). 'reaction' mode now defaults to prompt_for_reaction_start_box()
-    plus live tracking instead -- this is kept only in case a caller wants
-    the old fully-manual behavior.
-    """
-    print(
-        "\n[Reaction Mode] Tip: box the reactor's FACE as tightly as you can inside "
-        "the PIP bubble (skip the bubble border / background behind them) -- that "
-        "region gets scaled up a lot, so a tight box looks a lot sharper than a loose one."
-    )
-    return _prompt_for_box_segments(video_path, job_dir, box_label="Reaction PIP")
 
 
 def prompt_for_reaction_start_box(
     video_path: str, job_dir: str, prompt_fn: Optional[Callable[[str], str]] = None,
 ) -> Tuple[float, float, float, float]:
-    """
-    Ask for ONE box -- where the reactor's face sits in the PIP bubble at the
-    start of the clip. After this, render_gimbal_tracked_video tracks that
-    face automatically frame-by-frame using an OpenCV object tracker, instead
-    of asking for a manually-typed box at every guessed timestamp.
-
-    Tracking follows continuous motion (camera drift, the reactor leaning
-    around) fine on its own. What it can't do is jump across a hard cut where
-    an editor manually moved/resized the whole PIP overlay -- for that, the
-    render loop reuses the existing scene-cut detector already in this file
-    and pauses to ask for a fresh box only when a real cut is detected, so
-    you're never guessing timestamps up front.
-    """
-    frames = extract_preview_frames(video_path, job_dir, num_frames=3)
-
-    print("\n[Reaction Mode] Preview frames saved -- open these in any image viewer:")
-    for ts, path in frames:
-        print(f"  t={ts}s -> {path}")
-
-    print(
-        "\nBox the reactor's FACE as tightly as you can inside the PIP bubble at the "
-        "START of the clip (skip the bubble border / background behind them) -- that "
-        "region gets scaled up a lot, so a tight box looks sharper than a loose one.\n"
-        "Enter it as fractions of the frame (x,y,width,height), each between 0.0 and "
-        "1.0, measured from the top-left corner. Example: 0.06,0.72,0.10,0.16\n"
-        "After this, the face is tracked automatically -- you'll only be asked again "
-        "if a real cut/layout change is detected partway through.\n"
-    )
-
+    extract_preview_frames(video_path, job_dir, num_frames=3)
     ask = prompt_fn or (lambda q: input(q).strip())
     raw = ask("Reaction PIP box for the start of the clip (x,y,w,h): ")
     return _parse_box_fractions(raw)
@@ -631,12 +557,6 @@ def _frac_box_to_px(box_frac: Tuple[float, float, float, float], width: int, hei
 
 
 def _create_pip_tracker():
-    """
-    Cross-version OpenCV tracker constructor. CSRT is the most accurate for
-    a mostly-static PIP bubble (slower per-frame, but this is offline
-    rendering so that's fine); falls back to KCF if CSRT isn't available.
-    Requires opencv-contrib-python -- plain opencv-python doesn't ship these.
-    """
     candidates = []
     legacy = getattr(cv2, "legacy", None)
     for attr in ("TrackerCSRT_create", "TrackerKCF_create"):
@@ -655,14 +575,11 @@ def _create_pip_tracker():
             continue
 
     raise RuntimeError(
-        "No OpenCV object tracker available (need CSRT or KCF). "
-        "Install the contrib build with `pip install opencv-contrib-python` "
-        "to enable auto-tracking for 'reaction' mode."
+        "No OpenCV object tracker available. Install opencv-contrib-python to enable reaction auto-tracking."
     )
 
 
 def _box_for_time(segments: List[Tuple[float, Tuple[float, float, float, float]]], t: float) -> Tuple[float, float, float, float]:
-    """Pick whichever segment's start time is the latest one <= t."""
     active = segments[0][1]
     for start_t, box in segments:
         if start_t <= t:
@@ -709,8 +626,6 @@ def render_gimbal_tracked_video(
     height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
 
     out_w, out_h = OUTPUT_DIMENSIONS.get(aspect_ratio, OUTPUT_DIMENSIONS["9:16"])
-    # panel_h is the height of each stacked panel in "split"/"gaming_split_noface"
-    # mode -- two panels plus a 4px divider must add up to out_h, for any aspect ratio.
     panel_h = (out_h - 4) // 2
     crop_w_cut = int(height * (out_w / out_h))
 
@@ -739,11 +654,7 @@ def render_gimbal_tracked_video(
     game_panel_h = None
     if mode == "gaming":
         if not facecam_segments:
-            raise ValueError(
-                "'gaming' mode requires facecam_segments (from prompt_for_facecam_segments) "
-                "-- there's no automatic detection anymore, since that was the source of "
-                "the earlier bug where the wrong face got picked as the webcam."
-            )
+            raise ValueError("'gaming' mode requires facecam_segments.")
         facecam_panel_h = int(out_h * 0.35)
         game_panel_h = out_h - facecam_panel_h - 4
 
@@ -751,19 +662,10 @@ def render_gimbal_tracked_video(
     main_panel_h = None
     if mode == "reaction":
         if not reaction_start_box:
-            raise ValueError(
-                "'reaction' mode requires reaction_start_box (from prompt_for_reaction_start_box) "
-                "-- a reaction PIP bubble is usually too small/off-center for the face detector "
-                "to pick out reliably, so it starts from one manually-picked box and is tracked "
-                "automatically from there."
-            )
+            raise ValueError("'reaction' mode requires reaction_start_box.")
         reaction_panel_h = int(out_h * 0.32)
         main_panel_h = out_h - reaction_panel_h - 4
 
-    # 'reaction' mode tracking state: one live OpenCV tracker that follows the
-    # face frame-by-frame after the initial box. Re-armed (asks for a fresh
-    # box) whenever the existing hard-cut detector below fires, since a
-    # continuous-motion tracker can't jump across an editor's PIP reposition.
     reaction_tracker = None
     reaction_box_px: Optional[Tuple[int, int, int, int]] = None
     reaction_needs_reinit = (mode == "reaction")
@@ -791,12 +693,6 @@ def render_gimbal_tracked_video(
     CUT_DIFF_THRESHOLD = 35
     MIN_SPLIT_GAP = 90
 
-    print("[Gimbal Engine] Tracking subjects with continuous motion smoothing...")
-    if mode == "gaming":
-        print(f"[Gaming Mode] Using {len(facecam_segments)} manually-picked facecam position(s).")
-    if mode == "reaction":
-        print("[Reaction Mode] Tracking PIP face from the initial box (auto re-prompts on hard cuts).")
-
     def _reset_tracking_state():
         nonlocal smooth_solo_x, smooth_left_x, smooth_right_x, smooth_left_y, smooth_right_y
         nonlocal active_is_two_shot, pending_is_two_shot, pending_streak
@@ -804,9 +700,6 @@ def render_gimbal_tracked_video(
         nonlocal frames_since_last_detection, smooth_mouth_left, smooth_mouth_right
         nonlocal reaction_needs_reinit
         if mode == "reaction":
-            # A hard cut means the PIP bubble may have just been moved/resized
-            # by the editor -- the tracker can't follow across that, so flag
-            # it for a fresh box next time we hit the reaction branch below.
             reaction_needs_reinit = True
         smooth_solo_x = default_center_x
         smooth_left_x = default_left_x
@@ -948,9 +841,6 @@ def render_gimbal_tracked_video(
                 canvas = cv2.resize(solo_panel, (out_w, out_h))
 
             elif mode == "gaming":
-                # Look up the manually-picked box for THIS point in time -- handles
-                # a facecam that was moved mid-clip, since each entry is a
-                # (start_time, box) pair and we use whichever one applies now.
                 x_frac, y_frac, w_frac, h_frac = _box_for_time(facecam_segments, current_time)
                 fx = int(x_frac * width)
                 fy = int(y_frac * height)
@@ -974,20 +864,14 @@ def render_gimbal_tracked_video(
             elif mode == "reaction":
                 if reaction_needs_reinit:
                     if reaction_box_px is not None:
-                        # Not the first frame -- a hard cut fired mid-clip, meaning the
-                        # PIP bubble may have moved. Pause and show this exact frame so
-                        # the person can tell at a glance whether it actually moved.
                         cut_preview_path = os.path.join(job_dir, f"preview_frame_cut_{frame_idx}.png")
                         cv2.imwrite(cut_preview_path, frame)
-                        print(f"\n[Reaction Mode] Cut detected at {current_time:.1f}s.")
-                        print(f"  Frame saved -> {cut_preview_path}")
                         raw = ask(
-                            "  If the PIP moved/resized, enter its new box (x,y,w,h). "
+                            "If the PIP moved/resized, enter its new box (x,y,w,h). "
                             "Otherwise leave blank to keep tracking from the same spot: "
                         )
                         box_frac = _parse_box_fractions(raw) if raw else None
                     else:
-                        # First frame of the clip -- use the box collected up front.
                         box_frac = reaction_start_box
 
                     if box_frac is not None:
@@ -1005,21 +889,12 @@ def render_gimbal_tracked_video(
                         tx = max(0, min(tx, width - tw))
                         ty = max(0, min(ty, height - th))
                         reaction_box_px = (tx, ty, tw, th)
-                    # if tracking fails, just hold the last known box rather than
-                    # snapping somewhere wrong -- next real cut will re-prompt anyway.
 
                 rx, ry, rw, rh = reaction_box_px
-
-                # The PIP is usually small (~15-35% of source frame), so it gets a lot
-                # of upscaling -- use a sharper interpolation than the default linear
-                # resize everywhere else uses, since that matters a lot at this scale factor.
                 reaction_panel = frame[ry:ry + rh, rx:rx + rw]
                 interp = cv2.INTER_CUBIC if (out_w > rw or reaction_panel_h > rh) else cv2.INTER_AREA
                 reaction_resized = cv2.resize(reaction_panel, (out_w, reaction_panel_h), interpolation=interp)
 
-                # Bottom panel: the main footage, center-cropped to fill the panel
-                # (no face tracking needed here -- it's whatever's the "main" content
-                # the reactor is reacting to).
                 crop_w_main = min(width, int(height * (out_w / main_panel_h)))
                 crop_mx = int(max(0, min((width // 2) - (crop_w_main // 2), width - crop_w_main)))
                 main_panel = frame[0:height, crop_mx:crop_mx + crop_w_main]
@@ -1101,9 +976,10 @@ def process_clip(video_url: str, clip: ViralClip, index: int, job_dir: str,
     print(f"Hook: {clip.hook}")
     print(f"Reasoning: {clip.reasoning}")
 
+    # Use 720p slice max to preserve RAM limits on Render
     slice_cmd = [
         "yt-dlp",
-        "-f", "bv*[height<=1080]+ba/b[height<=1080]/best",
+        "-f", "bv*[height<=720]+ba/b[height<=720]/best",
         "--download-sections", f"*{clip.start_seconds}-{clip.end_seconds}",
         "--merge-output-format", "mp4",
         "--force-keyframes-at-cuts",
@@ -1142,18 +1018,12 @@ def process_clip(video_url: str, clip: ViralClip, index: int, job_dir: str,
             ]
             subprocess.run(ffmpeg_cmd, check=True)
         elif mode == "gaming":
-            # Manual pick happens here, per clip, using preview frames from
-            # THIS clip's actual footage -- so it reflects wherever the facecam
-            # really is in this specific segment, not a guess for the whole VOD.
             facecam_segments = prompt_for_facecam_segments(paced_file, job_dir, prompt_fn=prompt_fn)
             render_gimbal_tracked_video(
                 paced_file, final_output, job_dir, mode=mode,
                 facecam_segments=facecam_segments, aspect_ratio=aspect_ratio, prompt_fn=prompt_fn,
             )
         elif mode == "reaction":
-            # One manually-picked starting box, from THIS clip's actual footage;
-            # the render pass tracks the face automatically from there and only
-            # pauses to ask again if it detects a real cut/layout change.
             reaction_start_box = prompt_for_reaction_start_box(paced_file, job_dir, prompt_fn=prompt_fn)
             render_gimbal_tracked_video(
                 paced_file, final_output, job_dir, mode=mode,
@@ -1175,7 +1045,6 @@ def run_pipeline(youtube_url: str, aspect_ratio: str = "9:16", mode: str = "spli
                   job_id: Optional[str] = None) -> str:
     sweep_expired_jobs()
 
-    # Reuse the caller ID if provided, otherwise make a new one
     job_id = job_id or str(uuid.uuid4())
     job_dir = os.path.join(JOBS_ROOT, job_id)
     os.makedirs(job_dir, exist_ok=True)
