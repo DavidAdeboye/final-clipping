@@ -30,10 +30,10 @@ else:
     print("[Warning] No cookies.txt found. Anonymous requests may be blocked.")
 
 YT_CLIENT_ARGS = YT_EXTRA_ARGS + [
-    "--js-runtimes", "node",
-    "--remote-components", "ejs:github",
+    "--extractor-args", "youtube:player_client=android,web",
     "--no-check-certificates",
-    "--no-warnings"
+    "--no-warnings",
+    "--user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
 ]
 
 MODELS_DIR = "models"
