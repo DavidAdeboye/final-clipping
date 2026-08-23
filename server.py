@@ -1,43 +1,19 @@
-"""
-Thin FastAPI wrapper around app.run_pipeline.
-
-Why this exists: the picker functions in app.py (facecam box,
-reaction PIP box, "did the PIP move at this cut") were written around
-input(), which only works over a real terminal. This server runs the
-pipeline in a background thread per job and swaps input() for a
-WebPrompt that blocks the *job thread* (not the HTTP server) until the
-person answers through the picker page.
-
-Deploy target: a normal long-running host with a writable disk and
-ffmpeg installed (Railway / Render / Fly.io / a small VPS) -- NOT
-Vercel or other serverless-function platforms. This process needs to
-stay alive for minutes per clip and read/write files across requests,
-which serverless functions aren't built for (short execution caps, no
-persistent disk between invocations).
-
-Run with:
-    uvicorn server:app --host 0.0.0.0 --port 8000
-"""
 import os
+import json
 import threading
 import time
 import traceback
 import uuid
 from typing import Dict, Optional
 
-from fastapi import FastAPI, HTTPException
-from fastapi.responses import FileResponse, HTMLResponse
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import HTMLResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 import app as core
 
 app = FastAPI(title="Viral Clipper")
-
-# ---------------------------------------------------------------------------
-# In-memory job store. Fine for a single-process deploy; if you outgrow one
-# instance, swap this dict for Redis and keep the same interface.
-# ---------------------------------------------------------------------------
 
 class Job:
     def __init__(self, job_id: str):
@@ -46,31 +22,20 @@ class Job:
         self.error: Optional[str] = None
         self.result_dir: Optional[str] = None
         self.clips: list = []
-        # the current outstanding question, if status == awaiting_input
         self.question: Optional[str] = None
-        self.frames: list = []          # [(timestamp, filename), ...] for the picker to show
+        self.frames: list = []
         self._answer_event = threading.Event()
         self._answer: Optional[str] = None
         self.thread: Optional[threading.Thread] = None
 
-
 JOBS: Dict[str, Job] = {}
 
-
 class WebPrompt:
-    """
-    Drop-in replacement for the CLI's input(). Called from inside the
-    pipeline's background thread. Blocks that thread (never the HTTP
-    server) until POST /jobs/{id}/respond delivers an answer.
-    """
     def __init__(self, job: Job):
         self.job = job
 
     def ask(self, question: str) -> str:
         job = self.job
-        # Preview frames were just written into job_dir by the picker
-        # functions right before they call ask() -- pick up whatever's
-        # newest so the picker page has something to show.
         job_dir = os.path.join(core.JOBS_ROOT, job.id)
         frame_files = sorted(
             f for f in os.listdir(job_dir)
@@ -81,8 +46,7 @@ class WebPrompt:
         job.frames = frame_files
         job.status = "awaiting_input"
         job._answer_event.clear()
-
-        job._answer_event.wait()  # blocks this job's thread only
+        job._answer_event.wait()
 
         job.status = "running"
         answer = job._answer or ""
@@ -92,7 +56,6 @@ class WebPrompt:
     def __call__(self, question: str) -> str:
         return self.ask(question)
 
-
 def _run_job(job: Job, youtube_url: str, aspect_ratio: str, mode: str):
     job.status = "running"
     try:
@@ -101,6 +64,7 @@ def _run_job(job: Job, youtube_url: str, aspect_ratio: str, mode: str):
             aspect_ratio=aspect_ratio,
             mode=mode,
             prompt_fn=WebPrompt(job),
+            job_id=job.id,
         )
         job.result_dir = job_dir
         job.clips = sorted(
@@ -112,16 +76,10 @@ def _run_job(job: Job, youtube_url: str, aspect_ratio: str, mode: str):
         job.error = str(e)
         traceback.print_exc()
 
-
-# ---------------------------------------------------------------------------
-# API
-# ---------------------------------------------------------------------------
-
 class StartJobRequest(BaseModel):
     youtube_url: str
-    aspect_ratio: str = "9:16"     # "9:16" | "1:1" | "16:9"
-    mode: str = "split"            # split | cut | speaker_switch | gaming | gaming_split_noface | reaction
-
+    aspect_ratio: str = "9:16"
+    mode: str = "cut"
 
 @app.post("/jobs")
 def start_job(req: StartJobRequest):
@@ -134,27 +92,82 @@ def start_job(req: StartJobRequest):
     job.thread.start()
     return {"job_id": job_id}
 
+@app.get("/jobs")
+def list_jobs():
+    """Returns past sessions/projects for the Library tab."""
+    if not os.path.isdir(core.JOBS_ROOT):
+        return {"projects": []}
+
+    projects = []
+    retention_sec = core.FREE_TIER_RETENTION_HOURS * 3600
+
+    for job_id in os.listdir(core.JOBS_ROOT):
+        job_dir = os.path.join(core.JOBS_ROOT, job_id)
+        if not os.path.isdir(job_dir):
+            continue
+
+        meta_path = os.path.join(job_dir, core.JOB_METADATA_FILENAME)
+        created_at = os.path.getmtime(job_dir)
+        premium = False
+
+        if os.path.exists(meta_path):
+            try:
+                with open(meta_path, "r") as f:
+                    meta = json.load(f)
+                created_at = meta.get("created_at", created_at)
+                premium = meta.get("premium", False)
+            except Exception:
+                pass
+
+        clips = sorted([
+            f"/jobs/{job_id}/clip/{f}" for f in os.listdir(job_dir)
+            if f.startswith("clip_") and f.endswith(".mp4")
+        ])
+
+        if clips:
+            expires_at = created_at + retention_sec
+            projects.append({
+                "job_id": job_id,
+                "created_at": created_at,
+                "expires_at": expires_at,
+                "premium": premium,
+                "clip_count": len(clips),
+                "thumbnail_url": clips[0],
+                "clips": clips,
+            })
+
+    projects.sort(key=lambda p: p["created_at"], reverse=True)
+    return {"projects": projects}
 
 @app.get("/jobs/{job_id}")
 def get_job(job_id: str):
     job = JOBS.get(job_id)
     if not job:
         raise HTTPException(404, "job not found")
+    
+    job_dir = os.path.join(core.JOBS_ROOT, job.id)
+    live_clips = []
+    if os.path.isdir(job_dir):
+        raw_clips = sorted(
+            f for f in os.listdir(job_dir) if f.startswith("clip_") and f.endswith(".mp4")
+        )
+        for c in raw_clips:
+            cpath = os.path.join(job_dir, c)
+            # Ensure file is not empty and hasn't been written to in the last 1.5s
+            if os.path.getsize(cpath) > 10000 and (time.time() - os.path.getmtime(cpath) > 1.5):
+                live_clips.append(c)
+
     return {
         "id": job.id,
         "status": job.status,
         "error": job.error,
         "question": job.question if job.status == "awaiting_input" else None,
         "frames": [f"/jobs/{job.id}/frame/{f}" for f in job.frames] if job.status == "awaiting_input" else [],
-        "clips": [f"/jobs/{job.id}/clip/{c}" for c in job.clips] if job.status == "done" else [],
+        "clips": [f"/jobs/{job.id}/clip/{c}" for c in live_clips],
     }
 
-
 class RespondRequest(BaseModel):
-    # Expected format: "x,y,w,h" as fractions 0.0-1.0 (or "" to mean
-    # "no change" for the mid-clip cut re-prompt).
     answer: str
-
 
 @app.post("/jobs/{job_id}/respond")
 def respond_to_job(job_id: str, req: RespondRequest):
@@ -169,28 +182,59 @@ def respond_to_job(job_id: str, req: RespondRequest):
     job._answer_event.set()
     return {"ok": True}
 
-
-@app.get("/jobs/{job_id}/frame/{filename}")
-def get_frame(job_id: str, filename: str):
-    path = os.path.join(core.JOBS_ROOT, job_id, filename)
-    if not os.path.isfile(path):
-        raise HTTPException(404, "frame not found")
-    return FileResponse(path, media_type="image/png")
-
+def send_bytes_range_requests(file_path: str, start: int, end: int, chunk_size: int = 1024 * 1024):
+    with open(file_path, "rb") as f:
+        f.seek(start)
+        while (pos := f.tell()) <= end:
+            read_size = min(chunk_size, end + 1 - pos)
+            data = f.read(read_size)
+            if not data:
+                break
+            yield data
 
 @app.get("/jobs/{job_id}/clip/{filename}")
-def get_clip(job_id: str, filename: str):
+def get_clip(job_id: str, filename: str, request: Request):
     path = os.path.join(core.JOBS_ROOT, job_id, filename)
     if not os.path.isfile(path):
         raise HTTPException(404, "clip not found")
-    return FileResponse(path, media_type="video/mp4")
+
+    file_size = os.path.getsize(path)
+    range_header = request.headers.get("range")
+
+    if range_header:
+        byte1, byte2 = range_header.replace("bytes=", "").split("-")
+        start = int(byte1)
+        end = int(byte2) if byte2 else file_size - 1
+        length = (end - start) + 1
+
+        headers = {
+            "Content-Range": f"bytes {start}-{end}/{file_size}",
+            "Accept-Ranges": "bytes",
+            "Content-Length": str(length),
+            "Content-Type": "video/mp4",
+        }
+        return StreamingResponse(
+            send_bytes_range_requests(path, start, end),
+            status_code=206,
+            headers=headers,
+        )
+
+    headers = {
+        "Accept-Ranges": "bytes",
+        "Content-Length": str(file_size),
+        "Content-Type": "video/mp4",
+    }
+    return StreamingResponse(
+        send_bytes_range_requests(path, 0, file_size - 1),
+        status_code=200,
+        headers=headers,
+    )
 
 @app.get("/", response_class=HTMLResponse)
 def index():
     picker_path = os.path.join(os.path.dirname(__file__), "static", "picker.html")
-    with open(picker_path, "r") as f:
+    with open(picker_path, "r", encoding="utf-8") as f:
         return f.read()
-
 
 static_dir = os.path.join(os.path.dirname(__file__), "static")
 if os.path.isdir(static_dir):

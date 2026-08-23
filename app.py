@@ -1070,10 +1070,12 @@ def render_gimbal_tracked_video(
 
     try:
         merge_cmd = [
-            "ffmpeg", "-y",
+           "ffmpeg", "-y",
             "-i", temp_processed_video,
             "-i", input_path,
             "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
+            "-pix_fmt", "yuv420p",
+            "-movflags", "+faststart",
             "-c:a", "aac",
             "-map", "0:v:0",
             "-map", "1:a:0",
@@ -1134,6 +1136,8 @@ def process_clip(video_url: str, clip: ViralClip, index: int, job_dir: str,
                 "ffmpeg", "-y", "-i", paced_file,
                 "-vf", "scale=1920:1080,setsar=1",
                 "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
+                "-pix_fmt", "yuv420p",
+                "-movflags", "+faststart",
                 "-c:a", "aac", final_output
             ]
             subprocess.run(ffmpeg_cmd, check=True)
@@ -1167,15 +1171,17 @@ def process_clip(video_url: str, clip: ViralClip, index: int, job_dir: str,
 
 def run_pipeline(youtube_url: str, aspect_ratio: str = "9:16", mode: str = "split",
                   cleanup_on_success: bool = False, premium: bool = False,
-                  prompt_fn: Optional[Callable[[str], str]] = None) -> str:
+                  prompt_fn: Optional[Callable[[str], str]] = None,
+                  job_id: Optional[str] = None) -> str:
     sweep_expired_jobs()
 
-    job_id = str(uuid.uuid4())
+    # Reuse the caller ID if provided, otherwise make a new one
+    job_id = job_id or str(uuid.uuid4())
     job_dir = os.path.join(JOBS_ROOT, job_id)
     os.makedirs(job_dir, exist_ok=True)
     _write_job_metadata(job_dir, job_id, premium=premium)
     print(f"[Job {job_id}] Starting pipeline...")
-
+    
     try:
         video_id = get_video_id(youtube_url)
         validate_video_duration(youtube_url)
