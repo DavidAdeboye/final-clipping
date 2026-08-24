@@ -56,7 +56,7 @@ else:
     YT_EXTRA_ARGS = []
 
 # android_creator, android, and ios clients bypass the web player response errors on datacenter IPs
-_PLAYER_CLIENTS = "android_creator,android,ios"
+_PLAYER_CLIENTS = "tv,mweb"
 
 _DEFAULT_UA = (
     "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 "
@@ -137,8 +137,8 @@ def yt_client_args(proxy=_AUTO) -> list:
         proxy_part = []
 
     return [
-        "--user-agent", _DEFAULT_UA,
-        "--extractor-args", f"youtube:player_client={_PLAYER_CLIENTS};player_skip=webpage,configs",
+        "--extractor-args", f"youtube:player_client={_PLAYER_CLIENTS}",
+        "--rm-cache-dir",
         "--no-check-certificates",
         "--no-warnings",
         "--prefer-free-formats",
@@ -292,8 +292,8 @@ def _build_ytdlp_audio_cmd(youtube_url: str, temp_audio_file: str, player_client
         "--socket-timeout", "20",
         "--retries", "3",
         "--fragment-retries", "3",
-        "--user-agent", _DEFAULT_UA,
-        "--extractor-args", f"youtube:player_client={player_clients};player_skip=webpage,configs",
+        "--extractor-args", f"youtube:player_client={player_clients}",
+        "--rm-cache-dir",
         "--no-check-certificates",
         "--no-warnings",
         "--prefer-free-formats",
@@ -315,10 +315,12 @@ def transcribe_fast_groq(youtube_url: str, job_dir: str) -> str:
     temp_audio_file = os.path.join(job_dir, "temp_whisper.mp3")
 
     DOWNLOAD_TIMEOUT_SEC = 90
-    COOKIE_CLIENTS = "android_creator,android,ios"
-    NO_COOKIE_CLIENTS = "android_creator,android,ios"
+    COOKIE_CLIENTS = "tv,mweb"
+    NO_COOKIE_CLIENTS = "tv,mweb"
 
     proxy_sequence = _proxy_pool_shuffled() if _PROXY_LIST else []
+    
+    # ... (Keep the rest of the transcribe_fast_groq attempts loop exactly the same)
 
     attempts = []
     if COOKIE_FILE:
