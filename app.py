@@ -133,14 +133,13 @@ def yt_client_args(proxy=_AUTO) -> list:
         proxy_part = []
 
     return [
-        "--extractor-args", f"youtube:player_client={_PLAYER_CLIENTS}",
+        "--extractor-args", "youtube:player_client=web,tv;rustypipe_bg_pot_cache=1",
         "--rm-cache-dir",
         "--no-check-certificates",
         "--no-warnings",
         "--prefer-free-formats",
         "--geo-bypass",
     ] + YT_EXTRA_ARGS + proxy_part
-
 
 MODELS_DIR = "models"
 JOBS_ROOT = "jobs"
@@ -287,7 +286,7 @@ def _build_ytdlp_audio_cmd(youtube_url: str, temp_audio_file: str, player_client
         "-o", temp_audio_file,
         "--retries", "10",
         "--fragment-retries", "10",
-        "--extractor-args", f"youtube:player_client={player_clients}",
+        "--extractor-args", "youtube:player_client=web,tv;rustypipe_bg_pot_cache=1",
         "--rm-cache-dir",
         "--no-check-certificates",
         "--no-warnings",

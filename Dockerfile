@@ -33,7 +33,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 # it changed). This ensures `pip install -U yt-dlp` actually pulls the
 # latest version each deploy instead of silently reusing a stale layer.
 ADD https://pypi.org/pypi/yt-dlp/json /tmp/ytdlp_version.json
-RUN pip install --no-cache-dir -U "yt-dlp[default]"
+RUN pip install --no-cache-dir -U "yt-dlp[default]" yt-dlp-get-pot yt-dlp-get-pot-rustypipe
 
 COPY . .
 
