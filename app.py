@@ -143,91 +143,98 @@ def get_video_duration(video_url: str) -> int:
     return 600
 
 def extract_captions(video_url: str, job_dir: str) -> str:
-    print("Fetching video captions via Cloudflare Edge / Invidious...")
+    print("Fetching video captions via YouTube InnerTube API...")
     video_id = get_video_id(video_url)
 
-    # 1. First try public Invidious instances for clean caption tracks
-    invidious_endpoints = [
-        f"https://api.invidious.io/api/v1/captions/{video_id}",
-        f"https://vid.puffyan.us/api/v1/captions/{video_id}",
-        f"https://invidious.nerdvpn.de/api/v1/captions/{video_id}",
-    ]
-
-    for inv_url in invidious_endpoints:
-        try:
-            req = urllib.request.Request(inv_url, headers={"User-Agent": _BROWSER_UA})
-            with urllib.request.urlopen(req, timeout=8) as resp:
-                data = json.loads(resp.read().decode())
-                captions = data.get("captions", [])
-                for cap in captions:
-                    if cap.get("language_code", "").lower().startswith("en"):
-                        sub_url = cap.get("url")
-                        if sub_url:
-                            sub_req = urllib.request.Request(sub_url, headers={"User-Agent": _BROWSER_UA})
-                            with urllib.request.urlopen(sub_req, timeout=10) as sresp:
-                                sub_content = sresp.read().decode("utf-8", errors="ignore")
-                                lines = [
-                                    re.sub(r"<[^>]+>", "", l).strip()
-                                    for l in sub_content.splitlines()
-                                    if l.strip() and not l.startswith("WEBVTT") and "-->" not in l and not l.isdigit()
-                                ]
-                                text = " ".join(lines)
-                                if len(text) > 50:
-                                    print(f"Retrieved {len(text)} characters of transcript from Invidious.")
-                                    return text
-        except Exception:
-            continue
-
-    # 2. Fallback: Query YouTube via your Cloudflare edge worker
-    worker_url = f"https://yt-proxy.thatguyjude.workers.dev/?url=https://www.youtube.com/watch?v={video_id}"
-    try:
-        req = urllib.request.Request(
-            worker_url,
-            headers={
-                "User-Agent": _BROWSER_UA,
-                "Accept-Language": "en-US,en;q=0.9"
+    # 1. Query YouTube InnerTube Android endpoint for playback metadata & captions
+    innertube_url = "https://www.youtube.com/youtubei/v1/player"
+    payload = json.dumps({
+        "context": {
+            "client": {
+                "clientName": "ANDROID",
+                "clientVersion": "19.09.37",
+                "androidSdkVersion": 30,
+                "hl": "en",
+                "gl": "US"
             }
-        )
+        },
+        "videoId": video_id
+    }).encode("utf-8")
+
+    req = urllib.request.Request(
+        innertube_url,
+        data=payload,
+        headers={
+            "Content-Type": "application/json",
+            "User-Agent": "com.google.android.youtube/19.09.37 (Linux; U; Android 11; en_US)",
+            "X-YouTube-Client-Name": "3",
+            "X-YouTube-Client-Version": "19.09.37"
+        }
+    )
+
+    try:
         with urllib.request.urlopen(req, timeout=15) as resp:
-            html_content = resp.read().decode("utf-8", errors="ignore")
+            data = json.loads(resp.read().decode("utf-8"))
+    except Exception as e:
+        raise RuntimeError(f"Failed to query YouTube API: {e}")
 
-        match = re.search(r'"captionTracks":\s*(\[.*?\])', html_content)
-        caption_url = None
-        if match:
-            tracks = json.loads(match.group(1))
-            for t in tracks:
-                lang = t.get("languageCode", "").lower()
-                if lang.startswith("en"):
-                    caption_url = t.get("baseUrl")
-                    break
-            if not caption_url and len(tracks) > 0:
-                caption_url = tracks[0].get("baseUrl")
+    # 2. Locate caption tracks inside response
+    caption_tracks = (
+        data.get("captions", {})
+        .get("playerCaptionsTracklistRenderer", {})
+        .get("captionTracks", [])
+    )
 
-        if not caption_url:
-            caption_url = f"https://www.youtube.com/api/timedtext?v={video_id}&lang=en"
+    if not caption_tracks:
+        raise RuntimeError("No captions available for this video.")
 
-        proxied_caption_url = f"https://yt-proxy.thatguyjude.workers.dev/?url={urllib.parse.quote(caption_url)}"
-        cap_req = urllib.request.Request(proxied_caption_url, headers={"User-Agent": _BROWSER_UA})
+    # Prioritize English tracks
+    target_url = None
+    for track in caption_tracks:
+        lang = track.get("languageCode", "").lower()
+        if lang.startswith("en"):
+            target_url = track.get("baseUrl")
+            break
 
-        with urllib.request.urlopen(cap_req, timeout=15) as resp:
-            xml_data = resp.read().decode("utf-8", errors="ignore")
+    if not target_url:
+        target_url = caption_tracks[0].get("baseUrl")
 
-        root = ET.fromstring(xml_data)
-        texts = []
+    # Request caption transcript in JSON3 format
+    if "fmt=" not in target_url:
+        target_url += "&fmt=json3"
+
+    cap_req = urllib.request.Request(
+        target_url,
+        headers={"User-Agent": _BROWSER_UA}
+    )
+
+    with urllib.request.urlopen(cap_req, timeout=15) as c_resp:
+        cap_data = c_resp.read().decode("utf-8", errors="ignore")
+
+    lines = []
+    try:
+        json_subs = json.loads(cap_data)
+        for event in json_subs.get("events", []):
+            segs = event.get("segs", [])
+            for seg in segs:
+                utf8 = seg.get("utf8", "").strip()
+                if utf8 and utf8 != "\n":
+                    lines.append(utf8)
+    except Exception:
+        # Fallback XML parsing if response was returned as standard timedtext XML
+        root = ET.fromstring(cap_data)
         for text_el in root.findall(".//text"):
             if text_el.text:
-                clean_text = html.unescape(text_el.text).strip()
-                if clean_text:
-                    texts.append(clean_text)
+                clean_t = html.unescape(text_el.text).strip()
+                if clean_t:
+                    lines.append(clean_t)
 
-        full_transcript = " ".join(texts)
-        if full_transcript.strip():
-            print(f"Retrieved {len(full_transcript)} characters of transcript via Cloudflare Worker.")
-            return full_transcript
-    except Exception as e:
-        print(f"Worker caption fetch notice: {e}")
+    full_transcript = " ".join(lines)
+    if not full_transcript.strip():
+        raise RuntimeError("Retrieved transcript track was empty.")
 
-    raise RuntimeError("No caption track found for this video. Please test with a video that has English subtitles enabled.")
+    print(f"Successfully retrieved {len(full_transcript)} characters of transcript.")
+    return full_transcript
 
 def find_viral_moments(transcript_text: str) -> HighlightResponse:
     print("Analyzing highlights with Gemini using viral short form criteria...")
