@@ -380,92 +380,87 @@ def transcribe_fast_groq(youtube_url: str, job_dir: str) -> str:
             os.remove(temp_audio_file)
 
 
+import xml.etree.ElementTree as ET
+import html
+
+
 def fetch_transcript_text(youtube_url: str, video_id: str, job_dir: str) -> str:
-    print(f"Checking captions for video: {video_id}...")
+    print(f"Checking captions directly for video: {video_id}...")
 
-    def _cleanup_temp_subs():
-        for fname in os.listdir(job_dir):
-            if fname.startswith("temp_subs") and fname.endswith(".json3"):
-                fpath = os.path.join(job_dir, fname)
-                try:
-                    os.remove(fpath)
-                except OSError:
-                    pass
-
+    # Method 1: Scrape captionTracks directly from YouTube watch page HTML
     try:
-        # 1. Direct transcript extraction using Mozilla cookie file format
-        try:
-            cj = None
-            if COOKIE_FILE and os.path.exists(COOKIE_FILE):
-                cj = http.cookiejar.MozillaCookieJar(COOKIE_FILE)
-                cj.load(ignore_discard=True, ignore_expires=True)
+        watch_url = f"https://www.youtube.com/watch?v={video_id}"
+        req = urllib.request.Request(
+            watch_url,
+            headers={
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
+                "Accept-Language": "en-US,en;q=0.9",
+            }
+        )
+        with urllib.request.urlopen(req, timeout=12) as response:
+            html_content = response.read().decode("utf-8")
 
-            if hasattr(YouTubeTranscriptApi, "get_transcript"):
-                transcript_list = YouTubeTranscriptApi.get_transcript(video_id, cookies=cj) if cj else YouTubeTranscriptApi.get_transcript(video_id)
-            else:
-                ytt_api = YouTubeTranscriptApi()
-                fetched = ytt_api.fetch(video_id, cookies=cj) if cj else ytt_api.fetch(video_id)
-                transcript_list = fetched.to_raw_data()
-
-            formatted_lines = []
-            for item in transcript_list:
-                start = int(item['start'])
-                text = item['text'].replace('\n', ' ')
-                formatted_lines.append(f"[{start}s] {text}")
-            if formatted_lines:
-                print("Captions successfully retrieved via YouTubeTranscriptApi.")
-                return "\n".join(formatted_lines)
-        except Exception as transcript_err:
-            print(f"[Warning] YouTubeTranscriptApi skipped: {transcript_err}")
-
-        # 2. Direct subtitle file download via yt-dlp
-        try:
-            sub_prefix = os.path.join(job_dir, "temp_subs")
-            sub_cmd = [
-                "yt-dlp",
-                "--write-auto-subs",
-                "--write-subs",
-                "--sub-lang", "en,en-orig,en-US,en-GB",
-                "--sub-format", "json3",
-                "--skip-download",
-                "-o", f"{sub_prefix}.%(ext)s"
-            ] + yt_client_args() + [youtube_url]
-
-            subprocess.run(sub_cmd, capture_output=True, text=True, timeout=45)
-
-            wanted = {"en", "en-orig", "en-US", "en-GB"}
-            matched_files = [
-                os.path.join(job_dir, fname) for fname in os.listdir(job_dir)
-                if fname.startswith("temp_subs.") and fname.endswith(".json3")
-                and fname[len("temp_subs."):-len(".json3")] in wanted
-            ]
-            priority = ["temp_subs.en.json3", "temp_subs.en-orig.json3", "temp_subs.en-US.json3", "temp_subs.en-GB.json3"]
-            matched_files.sort(key=lambda p: priority.index(os.path.basename(p)) if os.path.basename(p) in priority else len(priority))
-
-            if matched_files:
-                with open(matched_files[0], "r", encoding="utf-8") as f:
-                    sub_data = json.load(f)
-
-                events = sub_data.get("events", [])
+        match = re.search(r'"captionTracks":\s*(\[.*?\])', html_content)
+        if match:
+            caption_tracks = json.loads(match.group(1))
+            # Pick English track if available, else take the first available language track
+            selected_track = next(
+                (t for t in caption_tracks if t.get("languageCode", "").startswith("en")),
+                caption_tracks[0]
+            )
+            base_url = selected_track.get("baseUrl")
+            if base_url:
+                cap_req = urllib.request.Request(
+                    base_url,
+                    headers={"User-Agent": "Mozilla/5.0"}
+                )
+                with urllib.request.urlopen(cap_req, timeout=12) as cap_resp:
+                    xml_data = cap_resp.read().decode("utf-8")
+                
+                root = ET.fromstring(xml_data)
                 lines = []
-                for ev in events:
-                    start_ms = ev.get("tStartMs", 0)
-                    segs = ev.get("segs", [])
-                    txt = "".join([s.get("utf8", "") for s in segs]).strip()
-                    if txt and txt != "\n":
-                        lines.append(f"[{int(start_ms / 1000)}s] {txt}")
+                for child in root.findall("text"):
+                    start = int(float(child.attrib.get("start", 0)))
+                    text = html.unescape(child.text or "").replace("\n", " ").strip()
+                    if text:
+                        lines.append(f"[{start}s] {text}")
+                
                 if lines:
-                    print("Captions successfully retrieved via yt-dlp.")
+                    print(f"Captions successfully extracted directly via YouTube TimedText ({len(lines)} lines).")
                     return "\n".join(lines)
-        except Exception:
-            pass
+    except Exception as e:
+        print(f"[TimedText Scraper] Direct page extraction skipped: {e}")
 
-        # 3. Fallback to audio download + Groq Whisper
-        return transcribe_fast_groq(youtube_url, job_dir)
+    # Method 2: Public edge transcript API (Zero-auth Cloudflare edge cache)
+    try:
+        edge_api_url = f"https://youtube-transcript.ai/transcript/{video_id}.txt"
+        req = urllib.request.Request(edge_api_url, headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            text = resp.read().decode("utf-8")
+            if text and len(text) > 100:
+                print("Captions successfully retrieved via Edge Transcript API.")
+                return text
+    except Exception as e:
+        print(f"[Edge API] Skipped: {e}")
 
-    finally:
-        _cleanup_temp_subs()
+    # Method 3: youtube-transcript-api library fallback
+    try:
+        if hasattr(YouTubeTranscriptApi, "get_transcript"):
+            transcript_list = YouTubeTranscriptApi.get_transcript(video_id)
+        else:
+            ytt_api = YouTubeTranscriptApi()
+            fetched = ytt_api.fetch(video_id)
+            transcript_list = fetched.to_raw_data()
 
+        lines = [f"[{int(item['start'])}s] {item['text'].replace(chr(10), ' ')}" for item in transcript_list]
+        if lines:
+            print("Captions successfully retrieved via youtube-transcript-api.")
+            return "\n".join(lines)
+    except Exception as e:
+        print(f"[youtube-transcript-api] Skipped: {e}")
+
+    # Method 4: Final fallback to Audio Download + Groq Whisper
+    return transcribe_fast_groq(youtube_url, job_dir)
 
 def find_viral_moments(transcript_text: str) -> HighlightResponse:
     print("Analyzing highlights with Gemini using viral short form criteria...")
