@@ -55,13 +55,8 @@ else:
           "and are more likely to hit 429/bot-check errors.")
     YT_EXTRA_ARGS = []
 
-# android_creator, android, and ios clients bypass the web player response errors on datacenter IPs
-_PLAYER_CLIENTS = "tv,mweb"
-
-_DEFAULT_UA = (
-    "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 "
-    "(KHTML, like Gecko) Chrome/122.0.0.0 Mobile Safari/537.36"
-)
+# The TV client is highly resilient on datacenter IPs like Render
+_PLAYER_CLIENTS = "tv"
 
 _PROXY_LIST = [p.strip() for p in os.environ.get("YTDLP_PROXIES", "").split(",") if p.strip()]
 if _PROXY_LIST:
@@ -315,19 +310,17 @@ def transcribe_fast_groq(youtube_url: str, job_dir: str) -> str:
     temp_audio_file = os.path.join(job_dir, "temp_whisper.mp3")
 
     DOWNLOAD_TIMEOUT_SEC = 90
-    COOKIE_CLIENTS = "tv,mweb"
-    NO_COOKIE_CLIENTS = "tv,mweb"
+    COOKIE_CLIENTS = "tv"
+    NO_COOKIE_CLIENTS = "tv"
 
     proxy_sequence = _proxy_pool_shuffled() if _PROXY_LIST else []
-    
-    # ... (Keep the rest of the transcribe_fast_groq attempts loop exactly the same)
 
     attempts = []
     if COOKIE_FILE:
         attempts.append({"client": COOKIE_CLIENTS, "use_cookies": True, "proxy": None,
-                          "label": "direct, cookies (android_creator/android/ios)"})
+                          "label": "direct, cookies (tv)"})
     attempts.append({"client": NO_COOKIE_CLIENTS, "use_cookies": False, "proxy": None,
-                      "label": "direct, no cookies (android_creator/android/ios)"})
+                      "label": "direct, no cookies (tv)"})
     for p in proxy_sequence[:3]:
         attempts.append({"client": COOKIE_CLIENTS if COOKIE_FILE else NO_COOKIE_CLIENTS,
                           "use_cookies": bool(COOKIE_FILE), "proxy": p,
