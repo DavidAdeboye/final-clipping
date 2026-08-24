@@ -129,8 +129,7 @@ def yt_client_args(proxy=_AUTO) -> list:
         proxy_part = []
 
     return [
-        "--js-engine", "deno",
-        "--extractor-args", "youtube:player_client=web,tv",
+        "--extractor-args", "youtube:player_client=mweb,web,tv",
         "--rm-cache-dir",
         "--no-check-certificates",
         "--no-warnings",
@@ -278,14 +277,13 @@ def _build_ytdlp_audio_cmd(youtube_url: str, temp_audio_file: str, player_client
                             use_cookies: bool, proxy: Optional[str]) -> list:
     cmd = [
         "yt-dlp",
-        "-f", "ba/b",
+        "-f", "ba[ext=m4a]/ba/b",
         "-x",
         "--audio-format", "mp3",
         "-o", temp_audio_file,
         "--retries", "3",
         "--fragment-retries", "3",
         "--socket-timeout", "15",
-        "--js-engine", "deno",
         "--extractor-args", f"youtube:player_client={player_clients}",
         "--rm-cache-dir",
         "--no-check-certificates",
@@ -294,15 +292,14 @@ def _build_ytdlp_audio_cmd(youtube_url: str, temp_audio_file: str, player_client
         "--geo-bypass",
     ]
     if use_cookies and COOKIE_FILE:
-        cmd += ["--cookies", COOKIE_FILE]
+        cmd += ["--cookies", COOKIE_FILE][cite: 2]
     if proxy:
         _log_proxy(proxy)
-        cmd += ["--proxy", proxy]
+        cmd += ["--proxy", proxy][cite: 2]
     else:
-        print("[yt-dlp] No proxy (direct)")
-    cmd.append(youtube_url)
+        print("[yt-dlp] No proxy (direct)")[cite: 2]
+    cmd.append(youtube_url)[cite: 2]
     return cmd
-
 
 def transcribe_fast_groq(youtube_url: str, job_dir: str) -> str:
     print("Downloading audio segment for Groq Whisper transcription...")
@@ -1143,15 +1140,15 @@ def process_clip(video_url: str, clip: ViralClip, index: int, job_dir: str,
     for attempt in range(slice_max_attempts):
         proxy_choice = slice_proxy_sequence[attempt]
         slice_cmd = [
-            "yt-dlp",
-            "-f", "best[height<=720]/bestvideo[height<=720]+bestaudio/best",
-            "--download-sections", f"*{clip.start_seconds}-{clip.end_seconds}",
-            "--merge-output-format", "mp4",
-            "--force-keyframes-at-cuts",
-            "--retries", "10",
-            "--fragment-retries", "10",
-            "--socket-timeout", "20"
-        ] + yt_client_args(proxy=proxy_choice) + [video_url, "-o", temp_raw]
+                "yt-dlp",
+                "-f", "bestvideo[height<=720]+bestaudio/best[height<=720]/best",
+                "--download-sections", f"*{clip.start_seconds}-{clip.end_seconds}",
+                "--merge-output-format", "mp4",
+                "--force-keyframes-at-cuts",
+                "--retries", "5",
+                "--fragment-retries", "5",
+                "--socket-timeout", "25"
+            ] + yt_client_args(proxy=proxy_choice) + [video_url, "-o", temp_raw]
 
         try:
             print(f"Downloading section (Attempt {attempt + 1}/{slice_max_attempts})...")
