@@ -6,8 +6,8 @@ import traceback
 import uuid
 from typing import Dict, Optional, List
 
-from fastapi import FastAPI, HTTPException, Request, UploadFile, File, Form
-from fastapi.responses import HTMLResponse, StreamingResponse, Response
+from fastapi import FastAPI, HTTPException, Request, Response
+from fastapi.responses import HTMLResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -48,7 +48,6 @@ class Job:
         self.clips: list = []
         self.question: Optional[str] = None
         self.frames: list = []
-        self.expected_segments: list = []
         self._answer_event = threading.Event()
         self._answer: Optional[str] = None
         self.thread: Optional[threading.Thread] = None
@@ -89,7 +88,7 @@ def _rehydrate_jobs_from_disk():
         job = Job(job_id)
         if clips:
             job.status = "done"
-        elif prior_status in ("queued", "running", "awaiting_input", "capturing_browser"):
+        elif prior_status in ("queued", "running", "awaiting_input"):
             job.status = "error"
             job.error = "Server restarted while this job was in progress. Please start a new clip job."
         elif prior_status == "error":
@@ -132,11 +131,32 @@ class WebPrompt:
         return self.ask(question)
 
 
-class StartJobBrowserRequest(BaseModel):
+def _run_job(job: Job, youtube_url: str, aspect_ratio: str, mode: str):
+    prompt_handler = WebPrompt(job)
+    try:
+        job.set_status("running")
+        job_dir = core.run_pipeline(
+            youtube_url,
+            aspect_ratio=aspect_ratio,
+            mode=mode,
+            prompt_fn=prompt_handler,
+            job_id=job.id
+        )
+        job.result_dir = job_dir
+        clips = sorted(
+            f for f in os.listdir(job_dir) if f.startswith("clip_") and f.endswith(".mp4")
+        ) if os.path.isdir(job_dir) else []
+        job.clips = clips
+        job.set_status("done")
+    except Exception as e:
+        job.set_status("error", error=str(e))
+        traceback.print_exc()
+
+
+class StartJobRequest(BaseModel):
     youtube_url: str
-    transcript_text: str
     aspect_ratio: str = "9:16"
-    mode: str = "split"
+    mode: str = "cut"
     client_id: Optional[str] = None
 
 
@@ -151,10 +171,10 @@ async def favicon():
     return Response(content=svg, media_type="image/svg+xml")
 
 
-@app.post("/jobs/init_browser")
-def init_browser_job(req: StartJobBrowserRequest):
+@app.post("/jobs")
+def create_job(req: StartJobRequest):
     job_id = str(uuid.uuid4())
-    job = Job(job_id, status="analyzing")
+    job = Job(job_id)
     JOBS[job_id] = job
 
     _persist_job_state(
@@ -165,69 +185,15 @@ def init_browser_job(req: StartJobBrowserRequest):
         error=None,
     )
 
-    try:
-        highlights = core.find_viral_moments(req.transcript_text)
-        job.expected_segments = [c.model_dump() for c in highlights.clips]
-        job.set_status("capturing_browser")
-        return {
-            "job_id": job_id,
-            "segments": job.expected_segments
-        }
-    except Exception as e:
-        job.set_status("error", error=str(e))
-        raise HTTPException(500, detail=str(e))
+    t = threading.Thread(
+        target=_run_job,
+        args=(job, req.youtube_url, req.aspect_ratio, req.mode),
+        daemon=True,
+    )
+    job.thread = t
+    t.start()
 
-
-@app.post("/jobs/{job_id}/upload_segment")
-async def upload_segment(
-    job_id: str,
-    index: int = Form(...),
-    clip_json: str = Form(...),
-    aspect_ratio: str = Form("9:16"),
-    mode: str = Form("split"),
-    file: UploadFile = File(...)
-):
-    job = JOBS.get(job_id)
-    if not job:
-        raise HTTPException(404, "Job not found")
-
-    job_dir = os.path.join(core.JOBS_ROOT, job_id)
-    os.makedirs(job_dir, exist_ok=True)
-    temp_raw = os.path.join(job_dir, f"temp_raw_{index}.mp4")
-
-    # Save incoming webm/mp4 directly to disk
-    with open(temp_raw, "wb") as buffer:
-        while chunk := await file.read(1024 * 1024):
-            buffer.write(chunk)
-
-    clip_dict = json.loads(clip_json)
-    clip_obj = core.ViralClip(**clip_dict)
-
-    # Process segment through tracking/silence removal
-    def _run_segment_render():
-        job.set_status("running")
-        try:
-            core.process_clip_from_file(
-                temp_raw,
-                clip_obj,
-                index,
-                job_dir,
-                mode=mode,
-                aspect_ratio=aspect_ratio,
-                prompt_fn=WebPrompt(job)
-            )
-            clips = sorted(
-                f for f in os.listdir(job_dir) if f.startswith("clip_") and f.endswith(".mp4")
-            )
-            job.clips = clips
-            if len(clips) >= len(job.expected_segments):
-                job.set_status("done")
-        except Exception as e:
-            job.set_status("error", error=str(e))
-            traceback.print_exc()
-
-    threading.Thread(target=_run_segment_render, daemon=True).start()
-    return {"status": "processing_segment"}
+    return {"job_id": job_id}
 
 
 @app.get("/projects")
@@ -303,7 +269,6 @@ def get_job(job_id: str):
         "id": job.id,
         "status": job.status,
         "error": job.error,
-        "expected_segments": job.expected_segments,
         "question": job.question if job.status == "awaiting_input" else None,
         "frames": [f"/jobs/{job.id}/frame/{f}" for f in job.frames] if job.status == "awaiting_input" else [],
         "clips": [f"/jobs/{job.id}/clip/{c}" for c in live_clips],
@@ -376,6 +341,16 @@ def get_clip(job_id: str, filename: str, request: Request):
         status_code=200,
         headers=headers,
     )
+
+
+@app.get("/jobs/{job_id}/frame/{filename}")
+def get_frame(job_id: str, filename: str):
+    path = os.path.join(core.JOBS_ROOT, job_id, filename)
+    if not os.path.isfile(path):
+        raise HTTPException(404, "frame not found")
+    with open(path, "rb") as f:
+        content = f.read()
+    return Response(content=content, media_type="image/png")
 
 
 @app.get("/", response_class=HTMLResponse)
