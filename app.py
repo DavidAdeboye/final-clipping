@@ -141,29 +141,58 @@ def get_video_duration(video_url: str) -> int:
         pass
     return 600
 
-
 def extract_captions(video_url: str, job_dir: str) -> str:
-    print("Fetching video captions directly from YouTube...")
+    print("Fetching video captions via Cloudflare Edge / Invidious...")
     video_id = get_video_id(video_url)
 
-    page_req = urllib.request.Request(
-        f"https://www.youtube.com/watch?v={video_id}",
-        headers={
-            "User-Agent": _BROWSER_UA,
-            "Accept-Language": "en-US,en;q=0.9"
-        }
-    )
-    
-    try:
-        with urllib.request.urlopen(page_req, timeout=15) as resp:
-            html_content = resp.read().decode("utf-8", errors="ignore")
-    except Exception as e:
-        raise RuntimeError(f"Could not reach YouTube video page: {e}")
+    # 1. First try public Invidious instances for clean caption tracks
+    invidious_endpoints = [
+        f"https://api.invidious.io/api/v1/captions/{video_id}",
+        f"https://vid.puffyan.us/api/v1/captions/{video_id}",
+        f"https://invidious.nerdvpn.de/api/v1/captions/{video_id}",
+    ]
 
-    caption_url = None
-    match = re.search(r'"captionTracks":\s*(\[.*?\])', html_content)
-    if match:
+    for inv_url in invidious_endpoints:
         try:
+            req = urllib.request.Request(inv_url, headers={"User-Agent": _BROWSER_UA})
+            with urllib.request.urlopen(req, timeout=8) as resp:
+                data = json.loads(resp.read().decode())
+                captions = data.get("captions", [])
+                for cap in captions:
+                    if cap.get("language_code", "").lower().startswith("en"):
+                        sub_url = cap.get("url")
+                        if sub_url:
+                            sub_req = urllib.request.Request(sub_url, headers={"User-Agent": _BROWSER_UA})
+                            with urllib.request.urlopen(sub_req, timeout=10) as sresp:
+                                sub_content = sresp.read().decode("utf-8", errors="ignore")
+                                lines = [
+                                    re.sub(r"<[^>]+>", "", l).strip()
+                                    for l in sub_content.splitlines()
+                                    if l.strip() and not l.startswith("WEBVTT") and "-->" not in l and not l.isdigit()
+                                ]
+                                text = " ".join(lines)
+                                if len(text) > 50:
+                                    print(f"Retrieved {len(text)} characters of transcript from Invidious.")
+                                    return text
+        except Exception:
+            continue
+
+    # 2. Fallback: Query YouTube via your Cloudflare edge worker
+    worker_url = f"https://yt-proxy.thatguyjude.workers.dev/?url=https://www.youtube.com/watch?v={video_id}"
+    try:
+        req = urllib.request.Request(
+            worker_url,
+            headers={
+                "User-Agent": _BROWSER_UA,
+                "Accept-Language": "en-US,en;q=0.9"
+            }
+        )
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            html_content = resp.read().decode("utf-8", errors="ignore")
+
+        match = re.search(r'"captionTracks":\s*(\[.*?\])', html_content)
+        caption_url = None
+        if match:
             tracks = json.loads(match.group(1))
             for t in tracks:
                 lang = t.get("languageCode", "").lower()
@@ -172,17 +201,13 @@ def extract_captions(video_url: str, job_dir: str) -> str:
                     break
             if not caption_url and len(tracks) > 0:
                 caption_url = tracks[0].get("baseUrl")
-        except Exception:
-            pass
 
-    if not caption_url:
-        caption_url = f"https://www.youtube.com/api/timedtext?v={video_id}&lang=en"
+        if not caption_url:
+            caption_url = f"https://www.youtube.com/api/timedtext?v={video_id}&lang=en"
 
-    try:
-        cap_req = urllib.request.Request(
-            caption_url,
-            headers={"User-Agent": _BROWSER_UA}
-        )
+        proxied_caption_url = f"https://yt-proxy.thatguyjude.workers.dev/?url={urllib.parse.quote(caption_url)}"
+        cap_req = urllib.request.Request(proxied_caption_url, headers={"User-Agent": _BROWSER_UA})
+
         with urllib.request.urlopen(cap_req, timeout=15) as resp:
             xml_data = resp.read().decode("utf-8", errors="ignore")
 
@@ -196,10 +221,10 @@ def extract_captions(video_url: str, job_dir: str) -> str:
 
         full_transcript = " ".join(texts)
         if full_transcript.strip():
-            print(f"Retrieved {len(full_transcript)} characters of transcript.")
+            print(f"Retrieved {len(full_transcript)} characters of transcript via Cloudflare Worker.")
             return full_transcript
     except Exception as e:
-        print(f"TimedText parse error: {e}")
+        print(f"Worker caption fetch notice: {e}")
 
     raise RuntimeError("No caption track found for this video. Please test with a video that has English subtitles enabled.")
 
