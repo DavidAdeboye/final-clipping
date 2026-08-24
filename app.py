@@ -142,20 +142,72 @@ def get_video_duration(video_url: str) -> int:
 
 
 def extract_captions(video_url: str, job_dir: str) -> str:
-    print("Fetching video captions via YouTube Transcript API...")
+    print("Fetching video captions directly from YouTube...")
     video_id = get_video_id(video_url)
 
+    # 1. Fetch video page HTML to locate the caption track stream URL
+    page_req = urllib.request.Request(
+        f"https://www.youtube.com/watch?v={video_id}",
+        headers={
+            "User-Agent": _BROWSER_UA,
+            "Accept-Language": "en-US,en;q=0.9"
+        }
+    )
+    
     try:
-        transcript_list = YouTubeTranscriptApi.get_transcript(video_id, languages=["en", "en-US", "en-GB"])
-        return " ".join([item["text"] for item in transcript_list])
-    except Exception:
+        with urllib.request.urlopen(page_req, timeout=15) as resp:
+            html_content = resp.read().decode("utf-8", errors="ignore")
+    except Exception as e:
+        raise RuntimeError(f"Could not reach YouTube video page: {e}")
+
+    # 2. Extract caption tracks from YouTube initial player response JSON
+    match = re.search(r'"captionTracks":\s*(\[.*?\])', html_content)
+    caption_url = None
+
+    if match:
         try:
-            transcript_list = YouTubeTranscriptApi.list_transcripts(video_id)
-            for transcript in transcript_list:
-                data = transcript.fetch()
-                return " ".join([item["text"] for item in data])
-        except Exception as e:
-            raise RuntimeError(f"Could not retrieve captions: {e}")
+            tracks = json.loads(match.group(1))
+            # Prioritize English tracks
+            for t in tracks:
+                lang = t.get("languageCode", "").lower()
+                if lang.startswith("en"):
+                    caption_url = t.get("baseUrl")
+                    break
+            if not caption_url and len(tracks) > 0:
+                caption_url = tracks[0].get("baseUrl")
+        except Exception:
+            pass
+
+    # Fallback to direct timedtext endpoint if player response JSON was obfuscated
+    if not caption_url:
+        caption_url = f"https://www.youtube.com/api/timedtext?v={video_id}&lang=en"
+
+    # 3. Download the XML caption payload
+    try:
+        cap_req = urllib.request.Request(
+            caption_url,
+            headers={"User-Agent": _BROWSER_UA}
+        )
+        with urllib.request.urlopen(cap_req, timeout=15) as resp:
+            xml_data = resp.read().decode("utf-8", errors="ignore")
+
+        # 4. Parse XML text elements
+        root = ET.fromstring(xml_data)
+        texts = []
+        for text_el in root.findall(".//text"):
+            if text_el.text:
+                clean_text = html.unescape(text_el.text).strip()
+                if clean_text:
+                    texts.append(clean_text)
+
+        full_transcript = " ".join(texts)
+        if full_transcript.strip():
+            print(f"Retrieved {len(full_transcript)} characters of transcript.")
+            return full_transcript
+    except Exception as e:
+        print(f"TimedText direct parse notice: {e}")
+
+    raise RuntimeError("No caption track found for this video. Please test with a video that has English subtitles enabled.")
 
 
 def find_viral_moments(transcript_text: str) -> HighlightResponse:
