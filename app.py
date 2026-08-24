@@ -1,4 +1,5 @@
 import os
+import random
 
 # Limit thread concurrency so Render free tier does not crash from OOM
 os.environ["OMP_NUM_THREADS"] = "1"
@@ -59,13 +60,33 @@ else:
 # "web"/"mweb" are the clients that actually honor browser-exported cookies.
 _PLAYER_CLIENTS = "web,mweb" if COOKIE_FILE else "ios,android,mweb"
 
-YT_CLIENT_ARGS = [
-    "--extractor-args", f"youtube:player_client={_PLAYER_CLIENTS}",
-    "--no-check-certificates",
-    "--no-warnings",
-    "--prefer-free-formats",
-    "--geo-bypass",
-] + YT_EXTRA_ARGS
+# Rotating proxy pool. Set YTDLP_PROXIES on the server (Render env var, never
+# committed to git) to a comma-separated list of full proxy URLs, e.g.:
+#   http://user:pass@ip1:port1,http://user:pass@ip2:port2,...
+# A different proxy is chosen at random for every yt-dlp invocation so a
+# single flagged IP doesn't take down every request.
+_PROXY_LIST = [p.strip() for p in os.environ.get("YTDLP_PROXIES", "").split(",") if p.strip()]
+if _PROXY_LIST:
+    print(f"[Startup] Loaded {len(_PROXY_LIST)} proxy option(s) for yt-dlp.")
+else:
+    print("[Startup] No YTDLP_PROXIES configured — yt-dlp will run without a proxy.")
+
+
+def _proxy_args() -> list:
+    if not _PROXY_LIST:
+        return []
+    return ["--proxy", random.choice(_PROXY_LIST)]
+
+
+def yt_client_args() -> list:
+    """Fresh args per call so proxy rotation actually rotates."""
+    return [
+        "--extractor-args", f"youtube:player_client={_PLAYER_CLIENTS}",
+        "--no-check-certificates",
+        "--no-warnings",
+        "--prefer-free-formats",
+        "--geo-bypass",
+    ] + YT_EXTRA_ARGS + _proxy_args()
 
 MODELS_DIR = "models"
 JOBS_ROOT = "jobs"
@@ -170,7 +191,7 @@ def validate_video_duration(youtube_url: str) -> int:
         "yt-dlp",
         "--dump-json",
         "--skip-download"
-    ] + YT_CLIENT_ARGS + [youtube_url]
+    ] + yt_client_args() + [youtube_url]
 
     try:
         result = subprocess.run(cmd, capture_output=True, text=True, check=True)
@@ -205,7 +226,7 @@ def transcribe_fast_groq(youtube_url: str, job_dir: str) -> str:
         "-x",
         "--audio-format", "mp3",
         "-o", temp_audio_file,
-    ] + YT_CLIENT_ARGS + [youtube_url]
+    ] + yt_client_args() + [youtube_url]
 
     res = subprocess.run(cmd, capture_output=True, text=True)
     if res.returncode != 0:
@@ -218,7 +239,7 @@ def transcribe_fast_groq(youtube_url: str, job_dir: str) -> str:
             "--audio-format", "mp3",
             "--extractor-args", f"youtube:player_client={fallback_client}",
             "-o", temp_audio_file,
-        ] + YT_EXTRA_ARGS + [youtube_url]
+        ] + YT_EXTRA_ARGS + _proxy_args() + [youtube_url]
         res_fb = subprocess.run(fallback_cmd, capture_output=True, text=True)
         if res_fb.returncode != 0:
             err_msg = res_fb.stderr or res.stderr or "Unknown download error"
@@ -280,7 +301,7 @@ def fetch_transcript_text(youtube_url: str, video_id: str, job_dir: str) -> str:
                 "--sub-format", "json3",
                 "--skip-download",
                 "-o", f"{sub_prefix}.%(ext)s"
-            ] + YT_CLIENT_ARGS + [youtube_url]
+            ] + yt_client_args() + [youtube_url]
 
             subprocess.run(sub_cmd, capture_output=True, text=True)
 
@@ -1016,7 +1037,7 @@ def process_clip(video_url: str, clip: ViralClip, index: int, job_dir: str,
         "--force-keyframes-at-cuts",
         "--retries", "10",
         "--fragment-retries", "10"
-    ] + YT_CLIENT_ARGS + [video_url, "-o", temp_raw]
+    ] + yt_client_args() + [video_url, "-o", temp_raw]
 
     download_success = False
     for attempt in range(3):
