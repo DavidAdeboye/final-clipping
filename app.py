@@ -53,9 +53,14 @@ else:
           "and are more likely to hit 429/bot-check errors.")
     YT_EXTRA_ARGS = []
 
-# Use iOS and Android mobile clients without overriding with desktop user agents
+# Client choice matters here: "ios"/"android" are YouTube's native app API
+# clients and authenticate via device tokens, NOT browser cookies — pairing them
+# with --cookies means the cookies are silently ignored on those attempts.
+# "web"/"mweb" are the clients that actually honor browser-exported cookies.
+_PLAYER_CLIENTS = "web,mweb" if COOKIE_FILE else "ios,android,mweb"
+
 YT_CLIENT_ARGS = [
-    "--extractor-args", "youtube:player_client=ios,android,mweb",
+    "--extractor-args", f"youtube:player_client={_PLAYER_CLIENTS}",
     "--no-check-certificates",
     "--no-warnings",
     "--prefer-free-formats",
@@ -204,13 +209,14 @@ def transcribe_fast_groq(youtube_url: str, job_dir: str) -> str:
 
     res = subprocess.run(cmd, capture_output=True, text=True)
     if res.returncode != 0:
-        # Fallback: try iOS standalone, but still pass cookies if we have them
+        # Fallback: use a client compatible with whatever auth we have
+        fallback_client = "web" if COOKIE_FILE else "ios"
         fallback_cmd = [
             "yt-dlp",
             "-f", "140/ba/b",
             "-x",
             "--audio-format", "mp3",
-            "--extractor-args", "youtube:player_client=ios",
+            "--extractor-args", f"youtube:player_client={fallback_client}",
             "-o", temp_audio_file,
         ] + YT_EXTRA_ARGS + [youtube_url]
         res_fb = subprocess.run(fallback_cmd, capture_output=True, text=True)

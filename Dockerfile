@@ -17,6 +17,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 # package alone for extractor fixes -- installing both, pip version is the
 # one actually imported/used if your code shells out to `yt-dlp` on PATH
 # this picks up whichever resolves first, which will be this one.
+ADD https://pypi.org/pypi/yt-dlp/json /tmp/ytdlp_version.json
 RUN pip install --no-cache-dir -U yt-dlp
 
 COPY . .
