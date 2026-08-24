@@ -75,7 +75,12 @@ else:
 def _proxy_args() -> list:
     if not _PROXY_LIST:
         return []
-    return ["--proxy", random.choice(_PROXY_LIST)]
+    chosen = random.choice(_PROXY_LIST)
+    # Log host:port only — never the credentials — so hangs/timeouts can be
+    # traced back to a specific proxy without leaking secrets into logs.
+    _, _, host_port = chosen.rpartition("@")
+    print(f"[yt-dlp] Using proxy: {host_port or '(unparseable)'}")
+    return ["--proxy", chosen]
 
 
 def yt_client_args() -> list:
@@ -194,7 +199,7 @@ def validate_video_duration(youtube_url: str) -> int:
     ] + yt_client_args() + [youtube_url]
 
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+        result = subprocess.run(cmd, capture_output=True, text=True, check=True, timeout=45)
         metadata = json.loads(result.stdout)
         duration = int(metadata.get("duration", 0))
 
@@ -219,18 +224,33 @@ def transcribe_fast_groq(youtube_url: str, job_dir: str) -> str:
     print("Downloading audio segment for Groq Whisper transcription...")
     temp_audio_file = os.path.join(job_dir, "temp_whisper.mp3")
 
-    # Command using mobile streaming clients
-    cmd = [
-        "yt-dlp",
-        "-f", "ba/b",
-        "-x",
-        "--audio-format", "mp3",
-        "-o", temp_audio_file,
-    ] + yt_client_args() + [youtube_url]
+    DOWNLOAD_TIMEOUT_SEC = 180  # audio-only download; if a proxy is dead/slow, fail fast instead of hanging the job
+    last_stderr = ""
 
-    res = subprocess.run(cmd, capture_output=True, text=True)
-    if res.returncode != 0:
-        # Fallback: use a client compatible with whatever auth we have
+    # Try up to 3 times, each with a freshly-chosen proxy (yt_client_args()
+    # re-rolls the proxy on every call), since a single dead/slow proxy in
+    # the pool shouldn't be able to hang the whole job.
+    for attempt in range(3):
+        cmd = [
+            "yt-dlp",
+            "-f", "ba/b",
+            "-x",
+            "--audio-format", "mp3",
+            "-o", temp_audio_file,
+        ] + yt_client_args() + [youtube_url]
+
+        try:
+            res = subprocess.run(cmd, capture_output=True, text=True, timeout=DOWNLOAD_TIMEOUT_SEC)
+        except subprocess.TimeoutExpired:
+            print(f"[Warning] yt-dlp audio download timed out after {DOWNLOAD_TIMEOUT_SEC}s (attempt {attempt + 1}/3). Retrying with a different proxy...")
+            last_stderr = f"Timed out after {DOWNLOAD_TIMEOUT_SEC}s"
+            continue
+
+        if res.returncode == 0:
+            break
+        last_stderr = res.stderr or last_stderr
+    else:
+        # All 3 attempts failed — try the fallback client once before giving up
         fallback_client = "web" if COOKIE_FILE else "ios"
         fallback_cmd = [
             "yt-dlp",
@@ -240,9 +260,15 @@ def transcribe_fast_groq(youtube_url: str, job_dir: str) -> str:
             "--extractor-args", f"youtube:player_client={fallback_client}",
             "-o", temp_audio_file,
         ] + YT_EXTRA_ARGS + _proxy_args() + [youtube_url]
-        res_fb = subprocess.run(fallback_cmd, capture_output=True, text=True)
+        try:
+            res_fb = subprocess.run(fallback_cmd, capture_output=True, text=True, timeout=DOWNLOAD_TIMEOUT_SEC)
+        except subprocess.TimeoutExpired:
+            if os.path.exists(temp_audio_file):
+                os.remove(temp_audio_file)
+            raise RuntimeError(f"Failed to capture audio from YouTube: fallback attempt also timed out after {DOWNLOAD_TIMEOUT_SEC}s")
+
         if res_fb.returncode != 0:
-            err_msg = res_fb.stderr or res.stderr or "Unknown download error"
+            err_msg = res_fb.stderr or last_stderr or "Unknown download error"
             if os.path.exists(temp_audio_file):
                 os.remove(temp_audio_file)
             raise RuntimeError(f"Failed to capture audio from YouTube: {err_msg}")
@@ -303,7 +329,7 @@ def fetch_transcript_text(youtube_url: str, video_id: str, job_dir: str) -> str:
                 "-o", f"{sub_prefix}.%(ext)s"
             ] + yt_client_args() + [youtube_url]
 
-            subprocess.run(sub_cmd, capture_output=True, text=True)
+            subprocess.run(sub_cmd, capture_output=True, text=True, timeout=45)
 
             wanted = {"en", "en-orig", "en-US", "en-GB"}
             matched_files = [
@@ -1029,23 +1055,28 @@ def process_clip(video_url: str, clip: ViralClip, index: int, job_dir: str,
     print(f"Reasoning: {clip.reasoning}")
 
     # Use 720p slice max to preserve RAM limits on Render
-    slice_cmd = [
-        "yt-dlp",
-        "-f", "best[height<=720]/bestvideo[height<=720]+bestaudio/best",
-        "--download-sections", f"*{clip.start_seconds}-{clip.end_seconds}",
-        "--merge-output-format", "mp4",
-        "--force-keyframes-at-cuts",
-        "--retries", "10",
-        "--fragment-retries", "10"
-    ] + yt_client_args() + [video_url, "-o", temp_raw]
+    SLICE_TIMEOUT_SEC = 240
 
     download_success = False
     for attempt in range(3):
+        slice_cmd = [
+            "yt-dlp",
+            "-f", "best[height<=720]/bestvideo[height<=720]+bestaudio/best",
+            "--download-sections", f"*{clip.start_seconds}-{clip.end_seconds}",
+            "--merge-output-format", "mp4",
+            "--force-keyframes-at-cuts",
+            "--retries", "10",
+            "--fragment-retries", "10"
+        ] + yt_client_args() + [video_url, "-o", temp_raw]  # fresh proxy pick each attempt
+
         try:
             print(f"Downloading section (Attempt {attempt + 1}/3)...")
-            subprocess.run(slice_cmd, check=True)
+            subprocess.run(slice_cmd, check=True, timeout=SLICE_TIMEOUT_SEC)
             download_success = True
             break
+        except subprocess.TimeoutExpired:
+            print(f"[Warning] Clip download timed out after {SLICE_TIMEOUT_SEC}s. Retrying with a different proxy...")
+            time.sleep(4)
         except subprocess.CalledProcessError:
             print("CDN connection reset detected. Retrying in 4s...")
             time.sleep(4)
