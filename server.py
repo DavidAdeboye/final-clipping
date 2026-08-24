@@ -4,17 +4,16 @@ import threading
 import time
 import traceback
 import uuid
-from typing import Dict, Optional
+from typing import Dict, Optional, List
 
-from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import HTMLResponse, StreamingResponse
+from fastapi import FastAPI, HTTPException, Request, UploadFile, File, Form
+from fastapi.responses import HTMLResponse, StreamingResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
-from fastapi.responses import Response
 
 import app as core
 
-app = FastAPI(title="Viral Clipper")
+app = FastAPI(title="AutoClip Studio")
 
 
 def _job_meta_path(job_id: str) -> str:
@@ -22,9 +21,6 @@ def _job_meta_path(job_id: str) -> str:
 
 
 def _persist_job_state(job_id: str, **fields):
-    """Merge-writes status/error/etc into job_meta.json so job state survives
-    a process restart (crash, OOM kill, redeploy). Never clobbers fields
-    (like client_id, created_at) written by other code paths."""
     job_dir = os.path.join(core.JOBS_ROOT, job_id)
     os.makedirs(job_dir, exist_ok=True)
     meta_path = _job_meta_path(job_id)
@@ -46,12 +42,13 @@ def _persist_job_state(job_id: str, **fields):
 class Job:
     def __init__(self, job_id: str, status: str = "queued"):
         self.id = job_id
-        self.status = status            # queued | running | awaiting_input | done | error
+        self.status = status
         self.error: Optional[str] = None
         self.result_dir: Optional[str] = None
         self.clips: list = []
         self.question: Optional[str] = None
         self.frames: list = []
+        self.expected_segments: list = []
         self._answer_event = threading.Event()
         self._answer: Optional[str] = None
         self.thread: Optional[threading.Thread] = None
@@ -67,12 +64,6 @@ JOBS: Dict[str, Job] = {}
 
 
 def _rehydrate_jobs_from_disk():
-    """On startup, reconstruct JOBS from job_meta.json files left behind by a
-    prior process. In-flight jobs (queued/running/awaiting_input) can't
-    actually be resumed - the worker thread and its state are gone - so we
-    mark them as errored rather than leaving clients to poll a ghost job
-    that 404s or hangs forever. Already-finished jobs are restored as 'done'
-    so their clips remain visible."""
     if not os.path.isdir(core.JOBS_ROOT):
         return
 
@@ -98,21 +89,21 @@ def _rehydrate_jobs_from_disk():
         job = Job(job_id)
         if clips:
             job.status = "done"
-        elif prior_status in ("queued", "running", "awaiting_input"):
-            # Was mid-flight when the process died; nothing to resume.
+        elif prior_status in ("queued", "running", "awaiting_input", "capturing_browser"):
             job.status = "error"
             job.error = "Server restarted while this job was in progress. Please start a new clip job."
         elif prior_status == "error":
             job.status = "error"
             job.error = meta.get("error") or "Job failed."
         else:
-            continue  # nothing usable to restore
+            continue
 
         JOBS[job_id] = job
         _persist_job_state(job_id, status=job.status, error=job.error)
 
 
 _rehydrate_jobs_from_disk()
+
 
 class WebPrompt:
     def __init__(self, job: Job):
@@ -140,30 +131,14 @@ class WebPrompt:
     def __call__(self, question: str) -> str:
         return self.ask(question)
 
-def _run_job(job: Job, youtube_url: str, aspect_ratio: str, mode: str):
-    job.set_status("running")
-    try:
-        job_dir = core.run_pipeline(
-            youtube_url,
-            aspect_ratio=aspect_ratio,
-            mode=mode,
-            prompt_fn=WebPrompt(job),
-            job_id=job.id,
-        )
-        job.result_dir = job_dir
-        job.clips = sorted(
-            f for f in os.listdir(job_dir) if f.startswith("clip_") and f.endswith(".mp4")
-        )
-        job.set_status("done")
-    except Exception as e:
-        job.set_status("error", error=str(e))
-        traceback.print_exc()
 
-class StartJobRequest(BaseModel):
+class StartJobBrowserRequest(BaseModel):
     youtube_url: str
+    transcript_text: str
     aspect_ratio: str = "9:16"
     mode: str = "split"
-    client_id: Optional[str] = None # Added field
+    client_id: Optional[str] = None
+
 
 @app.get("/favicon.ico", include_in_schema=False)
 async def favicon():
@@ -176,15 +151,12 @@ async def favicon():
     return Response(content=svg, media_type="image/svg+xml")
 
 
-@app.post("/jobs")
-def start_job(req: StartJobRequest):
+@app.post("/jobs/init_browser")
+def init_browser_job(req: StartJobBrowserRequest):
     job_id = str(uuid.uuid4())
-    job = Job(job_id)
+    job = Job(job_id, status="analyzing")
     JOBS[job_id] = job
 
-    # Save client_id + initial status to metadata immediately, merge-safe so
-    # later writers (run_pipeline's _write_job_metadata, our own status
-    # updates) don't clobber client_id or vice versa.
     _persist_job_state(
         job_id,
         client_id=req.client_id,
@@ -193,11 +165,70 @@ def start_job(req: StartJobRequest):
         error=None,
     )
 
-    job.thread = threading.Thread(
-        target=_run_job, args=(job, req.youtube_url, req.aspect_ratio, req.mode), daemon=True
-    )
-    job.thread.start()
-    return {"job_id": job_id}
+    try:
+        highlights = core.find_viral_moments(req.transcript_text)
+        job.expected_segments = [c.model_dump() for c in highlights.clips]
+        job.set_status("capturing_browser")
+        return {
+            "job_id": job_id,
+            "segments": job.expected_segments
+        }
+    except Exception as e:
+        job.set_status("error", error=str(e))
+        raise HTTPException(500, detail=str(e))
+
+
+@app.post("/jobs/{job_id}/upload_segment")
+async def upload_segment(
+    job_id: str,
+    index: int = Form(...),
+    clip_json: str = Form(...),
+    aspect_ratio: str = Form("9:16"),
+    mode: str = Form("split"),
+    file: UploadFile = File(...)
+):
+    job = JOBS.get(job_id)
+    if not job:
+        raise HTTPException(404, "Job not found")
+
+    job_dir = os.path.join(core.JOBS_ROOT, job_id)
+    os.makedirs(job_dir, exist_ok=True)
+    temp_raw = os.path.join(job_dir, f"temp_raw_{index}.mp4")
+
+    # Save incoming webm/mp4 directly to disk
+    with open(temp_raw, "wb") as buffer:
+        while chunk := await file.read(1024 * 1024):
+            buffer.write(chunk)
+
+    clip_dict = json.loads(clip_json)
+    clip_obj = core.ViralClip(**clip_dict)
+
+    # Process segment through tracking/silence removal
+    def _run_segment_render():
+        job.set_status("running")
+        try:
+            core.process_clip_from_file(
+                temp_raw,
+                clip_obj,
+                index,
+                job_dir,
+                mode=mode,
+                aspect_ratio=aspect_ratio,
+                prompt_fn=WebPrompt(job)
+            )
+            clips = sorted(
+                f for f in os.listdir(job_dir) if f.startswith("clip_") and f.endswith(".mp4")
+            )
+            job.clips = clips
+            if len(clips) >= len(job.expected_segments):
+                job.set_status("done")
+        except Exception as e:
+            job.set_status("error", error=str(e))
+            traceback.print_exc()
+
+    threading.Thread(target=_run_segment_render, daemon=True).start()
+    return {"status": "processing_segment"}
+
 
 @app.get("/projects")
 def list_projects(client_id: Optional[str] = None):
@@ -223,7 +254,6 @@ def list_projects(client_id: Optional[str] = None):
             except Exception:
                 pass
 
-        # Filter out jobs belonging to other users
         if client_id and job_client != client_id:
             continue
 
@@ -242,60 +272,11 @@ def list_projects(client_id: Optional[str] = None):
     projects.sort(key=lambda p: p["created_at"], reverse=True)
     return projects
 
-@app.get("/jobs")
-def list_jobs():
-    """Returns past sessions/projects for the Library tab."""
-    if not os.path.isdir(core.JOBS_ROOT):
-        return {"projects": []}
-
-    projects = []
-    retention_sec = core.FREE_TIER_RETENTION_HOURS * 3600
-
-    for job_id in os.listdir(core.JOBS_ROOT):
-        job_dir = os.path.join(core.JOBS_ROOT, job_id)
-        if not os.path.isdir(job_dir):
-            continue
-
-        meta_path = os.path.join(job_dir, core.JOB_METADATA_FILENAME)
-        created_at = os.path.getmtime(job_dir)
-        premium = False
-
-        if os.path.exists(meta_path):
-            try:
-                with open(meta_path, "r") as f:
-                    meta = json.load(f)
-                created_at = meta.get("created_at", created_at)
-                premium = meta.get("premium", False)
-            except Exception:
-                pass
-
-        clips = sorted([
-            f"/jobs/{job_id}/clip/{f}" for f in os.listdir(job_dir)
-            if f.startswith("clip_") and f.endswith(".mp4")
-        ])
-
-        if clips:
-            expires_at = created_at + retention_sec
-            projects.append({
-                "job_id": job_id,
-                "created_at": created_at,
-                "expires_at": expires_at,
-                "premium": premium,
-                "clip_count": len(clips),
-                "thumbnail_url": clips[0],
-                "clips": clips,
-            })
-
-    projects.sort(key=lambda p: p["created_at"], reverse=True)
-    return {"projects": projects}
 
 @app.get("/jobs/{job_id}")
 def get_job(job_id: str):
     job = JOBS.get(job_id)
     if not job:
-        # Not in this process's memory - either it never existed, or the
-        # server restarted mid-job. Check disk before giving up so clients
-        # polling an in-flight job don't get a bare 404 into a black hole.
         job_dir = os.path.join(core.JOBS_ROOT, job_id)
         if not os.path.isdir(job_dir):
             raise HTTPException(404, "job not found")
@@ -304,13 +285,8 @@ def get_job(job_id: str):
             f for f in os.listdir(job_dir) if f.startswith("clip_") and f.endswith(".mp4")
         )
         job = Job(job_id)
-        if clips:
-            job.status = "done"
-        else:
-            job.status = "error"
-            job.error = "Server restarted while this job was in progress. Please start a new clip job."
+        job.status = "done" if clips else "error"
         JOBS[job_id] = job
-        _persist_job_state(job_id, status=job.status, error=job.error)
 
     job_dir = os.path.join(core.JOBS_ROOT, job.id)
     live_clips = []
@@ -320,7 +296,6 @@ def get_job(job_id: str):
         )
         for c in raw_clips:
             cpath = os.path.join(job_dir, c)
-            # Ensure file is not empty and hasn't been written to in the last 1.5s
             if os.path.getsize(cpath) > 10000 and (time.time() - os.path.getmtime(cpath) > 1.5):
                 live_clips.append(c)
 
@@ -328,13 +303,16 @@ def get_job(job_id: str):
         "id": job.id,
         "status": job.status,
         "error": job.error,
+        "expected_segments": job.expected_segments,
         "question": job.question if job.status == "awaiting_input" else None,
         "frames": [f"/jobs/{job.id}/frame/{f}" for f in job.frames] if job.status == "awaiting_input" else [],
         "clips": [f"/jobs/{job.id}/clip/{c}" for c in live_clips],
     }
 
+
 class RespondRequest(BaseModel):
     answer: str
+
 
 @app.post("/jobs/{job_id}/respond")
 def respond_to_job(job_id: str, req: RespondRequest):
@@ -349,6 +327,7 @@ def respond_to_job(job_id: str, req: RespondRequest):
     job._answer_event.set()
     return {"ok": True}
 
+
 def send_bytes_range_requests(file_path: str, start: int, end: int, chunk_size: int = 1024 * 1024):
     with open(file_path, "rb") as f:
         f.seek(start)
@@ -358,6 +337,7 @@ def send_bytes_range_requests(file_path: str, start: int, end: int, chunk_size: 
             if not data:
                 break
             yield data
+
 
 @app.get("/jobs/{job_id}/clip/{filename}")
 def get_clip(job_id: str, filename: str, request: Request):
@@ -397,24 +377,19 @@ def get_clip(job_id: str, filename: str, request: Request):
         headers=headers,
     )
 
+
 @app.get("/", response_class=HTMLResponse)
 def index():
     picker_path = os.path.join(os.path.dirname(__file__), "static", "picker.html")
     with open(picker_path, "r", encoding="utf-8") as f:
         return f.read()
 
+
 static_dir = os.path.join(os.path.dirname(__file__), "static")
 if os.path.isdir(static_dir):
     app.mount("/static", StaticFiles(directory=static_dir), name="static")
 
+
 @app.get("/health")
 def health_check():
     return {"status": "ok"}
-
-
-@app.get("/proxy-health")
-def proxy_health():
-    """Per-process success/fail counts per proxy (host:port only, never
-    credentials), reset on every restart. Quick way to spot a dead/flagged
-    proxy without grepping Render logs."""
-    return core.get_proxy_health_summary()

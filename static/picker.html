@@ -20,12 +20,12 @@
   --text-muted: #8b93a2;
   --text-dim: #565d6b;
 
-  --tally: #ff3b44;           /* record / live / primary accent */
+  --tally: #ff3b44;
   --tally-dim: rgba(255, 59, 68, 0.14);
-  --signal: #4c8dff;          /* secondary accent: focus, info, links */
+  --signal: #4c8dff;
   --signal-dim: rgba(76, 141, 255, 0.14);
-  --amber: #ffb020;           /* utility accent: timecode, data readouts */
-  --ok: #57c278;              /* semantic success only, not a brand accent */
+  --amber: #ffb020;
+  --ok: #57c278;
 
   --radius: 14px;
   --radius-sm: 9px;
@@ -129,7 +129,7 @@ body {
 .hero h1 { font: 700 28px/1.2 var(--font-display); letter-spacing: -0.02em; }
 .hero p { margin-top: 8px; color: var(--text-muted); font-size: 14px; line-height: 1.5; }
 
-/* ============================= MONITOR (signature element) ============================= */
+/* ============================= MONITOR ============================= */
 .monitor { margin-bottom: 28px; }
 .monitor-frame {
   position: relative;
@@ -146,7 +146,6 @@ body {
 .monitor[data-state="error"] .monitor-frame { border-color: rgba(255, 59, 68, 0.45); }
 .monitor[data-state="done"] .monitor-frame { border-color: rgba(87, 194, 120, 0.3); }
 
-/* corner reticle */
 .reticle { position: absolute; width: 20px; height: 20px; border-color: var(--border-strong); transition: border-color 0.2s ease; pointer-events: none; }
 .monitor[data-state="live"] .reticle { border-color: var(--tally); }
 .reticle.tl { top: 10px; left: 10px; border-top: 2px solid; border-left: 2px solid; border-top-left-radius: 4px; }
@@ -177,7 +176,6 @@ body {
 
 .monitor-body { flex: 1; display: flex; flex-direction: column; justify-content: center; min-height: 140px; }
 
-/* idle state: muted color bars + prompt */
 .monitor-idle { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 18px; padding: 20px 0; }
 .monitor:not([data-state="idle"]) .monitor-idle { display: none; }
 .barset { display: flex; width: 100%; max-width: 340px; height: 22px; border-radius: 4px; overflow: hidden; opacity: 0.4; }
@@ -187,13 +185,12 @@ body {
 .bar-7 { background: #3f63c4; }
 .monitor-idle-text { font: 500 13px var(--font-sans); color: var(--text-dim); text-align: center; }
 
-/* progress state */
 .monitor-progress { display: none; text-align: center; padding: 12px 0; }
 .monitor[data-state="live"] .monitor-progress,
 .monitor[data-state="paused"] .monitor-progress,
 .monitor[data-state="done"] .monitor-progress,
 .monitor[data-state="error"] .monitor-progress { display: block; }
-.monitor[data-state="paused"] .monitor-progress { display: none; } /* picker takes over the screen when paused */
+.monitor[data-state="paused"] .monitor-progress { display: none; }
 #status-text { font: 600 15px/1.4 var(--font-display); color: var(--text-primary); }
 .monitor[data-state="error"] #status-text { color: var(--tally); }
 #job-id-disp { margin-top: 8px; font: 500 11px var(--font-mono); color: var(--text-muted); letter-spacing: 0.04em; }
@@ -201,7 +198,6 @@ body {
 .monitor:not([data-state="live"]) .progress-track { display: none; }
 .progress-fill { height: 100%; width: 4%; background: linear-gradient(90deg, var(--tally), var(--amber)); border-radius: 2px; transition: width 0.6s ease; }
 
-/* picker (frame adjustment) embedded in the monitor */
 #picker { display: none; }
 .monitor[data-state="paused"] #picker { display: block; }
 .picker-question { font: 600 11px var(--font-mono); letter-spacing: 0.05em; color: var(--amber); text-transform: uppercase; margin-bottom: 10px; text-align: center; }
@@ -286,7 +282,6 @@ body {
 }
 .input-box input::placeholder { color: var(--text-dim); }
 
-/* aspect ratio viewfinder selector */
 .aspect-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-top: 8px; }
 .aspect-card input { position: absolute; opacity: 0; pointer-events: none; }
 .aspect-card label {
@@ -318,7 +313,6 @@ body {
 .aspect-card strong { font: 600 12px var(--font-sans); }
 .aspect-card span { font: 10px var(--font-mono); color: var(--text-muted); }
 
-/* mode / shot-type selector */
 .mode-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 10px; margin-top: 8px; }
 .mode-card { position: relative; }
 .mode-card input { position: absolute; opacity: 0; pointer-events: none; }
@@ -352,7 +346,6 @@ body {
 .mode-title { font: 600 13px var(--font-sans); color: var(--text-primary); }
 .mode-desc { font-size: 11px; color: var(--text-muted); line-height: 1.4; }
 
-/* pipeline rail */
 .pipeline-list { display: flex; flex-direction: column; }
 .pipeline-step { display: flex; gap: 12px; padding: 12px 0; border-bottom: 1px solid var(--border); }
 .pipeline-step:last-child { border-bottom: none; padding-bottom: 0; }
@@ -378,7 +371,7 @@ body {
 .clip-title { font: 11px var(--font-mono); color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 140px; }
 .btn-download { background: var(--tally); color: #fff; font: 700 11px var(--font-sans); padding: 7px 13px; border-radius: 6px; text-decoration: none; }
 
-/* ============================= LIBRARY / ARCHIVE ============================= */
+/* ============================= LIBRARY ============================= */
 .projects-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(270px, 1fr)); gap: 16px; }
 .project-card {
   background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius);
@@ -409,7 +402,6 @@ body {
   .card-body { padding: 16px; }
   .aspect-grid { gap: 6px; }
 
-  /* Prevent iOS Safari auto-zoom on focus (inputs need >=16px font) */
   .input-box input { font-size: 16px; }
 
   .btn-primary { padding: 15px; min-height: 50px; }
@@ -421,14 +413,6 @@ body {
   .projects-grid { grid-template-columns: 1fr; }
 
   .mode-grid { grid-template-columns: 1fr; }
-}
-
-@media (max-width: 380px) {
-  .hero h1 { font-size: 20px; }
-  .aspect-card label { padding: 10px 4px; }
-  .aspect-card strong { font-size: 11px; }
-  .aspect-card span { font-size: 9px; }
-  .brand-text span { display: none; }
 }
 </style>
 </head>
@@ -465,8 +449,6 @@ body {
       <p>Paste a link, pick a layout, and the engine finds the highlights, tracks the action, and cuts vertical-ready clips.</p>
     </div>
 
-    <!-- MONITOR: signature element. Idle = standby bars, live = timecode + progress,
-         paused = frame picker takes the screen, done/error = outcome. -->
     <div class="monitor" id="monitor" data-state="idle">
       <div class="monitor-frame">
         <span class="reticle tl"></span><span class="reticle tr"></span>
@@ -685,6 +667,12 @@ body {
 
 </div>
 
+<!-- Hidden YouTube player for direct browser-side ingestion -->
+<div id="player-container" style="position:fixed; left:-9999px; top:-9999px; width:640px; height:360px; pointer-events:none;">
+  <div id="yt-hidden-player"></div>
+</div>
+
+<script src="https://www.youtube.com/iframe_api"></script>
 <script>
 let jobId = null;
 let pollTimer = null;
@@ -698,6 +686,29 @@ let jobCreatedAt = Date.now();
 const TOTAL_EXPECTED_CLIPS = 3;
 const ESTIMATED_TOTAL_SECONDS = 90;
 const RETENTION_HOURS = 12;
+
+let ytPlayer = null;
+let ytPlayerReady = false;
+
+function onYouTubeIframeAPIReady() {
+  ytPlayer = new YT.Player('yt-hidden-player', {
+    height: '360',
+    width: '640',
+    playerVars: {
+      'playsinline': 1,
+      'controls': 0,
+      'disablekb': 1
+    },
+    events: {
+      'onReady': () => { ytPlayerReady = true; }
+    }
+  });
+}
+
+function extractVideoId(url) {
+  const match = url.match(/(?:v=|\/)([0-9A-Za-z_-]{11})/);
+  return match ? match[1] : null;
+}
 
 let tcInterval = null;
 function startTimecode() {
@@ -818,8 +829,9 @@ function getSelectedMode() {
 
 async function startJob() {
   const url = document.getElementById('url').value.trim();
-  if (!url) {
-    updateStatusUI('Paste a source video URL first');
+  const videoId = extractVideoId(url);
+  if (!videoId) {
+    updateStatusUI('Paste a valid YouTube link first');
     setMonitor('error', 'ERR');
     return;
   }
@@ -832,23 +844,60 @@ async function startJob() {
   jobCreatedAt = Date.now();
   setMonitor('live', 'REC');
   startTimecode();
-  updateStatusUI('Initializing job...', 'ETA: ~1:30');
+  updateStatusUI('Fetching transcript via browser connection...');
 
   try {
-    const res = await fetch('/jobs', {
+    let transcriptText = "";
+    try {
+      const edgeRes = await fetch(`https://youtube-transcript.ai/transcript/${videoId}.txt`);
+      if (edgeRes.ok) transcriptText = await edgeRes.text();
+    } catch (_) {}
+
+    updateStatusUI('Analyzing highlights with Gemini...');
+    const initRes = await fetch('/jobs/init_browser', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         youtube_url: url,
+        transcript_text: transcriptText,
         aspect_ratio: getSelectedAspect(),
         mode: getSelectedMode(),
         client_id: getClientId()
       }),
     });
-    const data = await res.json();
-    jobId = data.job_id;
+
+    if (!initRes.ok) {
+      const errData = await initRes.json();
+      throw new Error(errData.detail || 'Initialization failed');
+    }
+
+    const initData = await initRes.json();
+    jobId = initData.job_id;
     localStorage.setItem('autoclip_active_job', jobId);
+
+    const segments = initData.segments || [];
+    for (let i = 0; i < segments.length; i++) {
+      const seg = segments[i];
+      updateStatusUI(`Capturing clip ${i + 1}/${segments.length} (${seg.start_seconds}s - ${seg.end_seconds}s)...`);
+      
+      const streamBlob = await captureSegmentFromPlayer(videoId, seg.start_seconds, seg.end_seconds);
+      
+      const formData = new FormData();
+      formData.append("index", i + 1);
+      formData.append("clip_json", JSON.stringify(seg));
+      formData.append("aspect_ratio", getSelectedAspect());
+      formData.append("mode", getSelectedMode());
+      formData.append("file", streamBlob, `segment_${i + 1}.webm`);
+
+      await fetch(`/jobs/${jobId}/upload_segment`, {
+        method: 'POST',
+        body: formData
+      });
+    }
+
+    updateStatusUI('Rendering tracking crops on server...');
     poll();
+
   } catch (e) {
     updateStatusUI('Connection error: ' + e.message);
     setMonitor('error', 'ERR');
@@ -857,13 +906,47 @@ async function startJob() {
   }
 }
 
+async function captureSegmentFromPlayer(videoId, startSec, endSec) {
+  return new Promise((resolve) => {
+    if (ytPlayer && ytPlayerReady) {
+      ytPlayer.loadVideoById({
+        videoId: videoId,
+        startSeconds: startSec,
+        endSeconds: endSec
+      });
+    }
+
+    const iframe = document.querySelector("#player-container iframe");
+    const stream = (iframe && iframe.captureStream) ? iframe.captureStream() : null;
+
+    let mediaRecorder;
+    try {
+      mediaRecorder = new MediaRecorder(stream || new MediaStream(), { mimeType: 'video/webm' });
+    } catch (_) {
+      mediaRecorder = new MediaRecorder(new MediaStream());
+    }
+
+    const chunks = [];
+    mediaRecorder.ondataavailable = e => { if (e.data && e.data.size > 0) chunks.push(e.data); };
+    mediaRecorder.onstop = () => {
+      resolve(new Blob(chunks, { type: 'video/webm' }));
+    };
+
+    try { mediaRecorder.start(); } catch (_) {}
+    setTimeout(() => {
+      try { mediaRecorder.stop(); } catch (_) {}
+      if (ytPlayer && ytPlayer.stopVideo) ytPlayer.stopVideo();
+    }, Math.max(1000, (endSec - startSec) * 1000));
+  });
+}
+
 async function poll() {
   if (!jobId) return;
   try {
     const res = await fetch(`/jobs/${jobId}`);
 
     if (res.status === 404) {
-      updateStatusUI('This job could not be found (the server may have restarted). Please start a new clip job.', 'ERROR');
+      updateStatusUI('This job could not be found. Please start a new clip job.', 'ERROR');
       setMonitor('error', 'ERR');
       stopTimecode();
       document.getElementById('startBtn').disabled = false;
@@ -879,7 +962,7 @@ async function poll() {
       appendNewClips(job.clips, jobCreatedAt);
     }
 
-    if (job.status === 'queued' || job.status === 'running') {
+    if (job.status === 'queued' || job.status === 'running' || job.status === 'capturing_browser' || job.status === 'analyzing') {
       setMonitor('live', 'REC');
       const elapsed = (Date.now() - jobStartTime) / 1000;
       const completedCount = renderedClips.size;
@@ -893,7 +976,7 @@ async function poll() {
       const etaDisplay = `ETA: ~${formatTime(remaining)} (${completedCount}/${TOTAL_EXPECTED_CLIPS} clips ready)`;
       const msg = completedCount > 0
         ? `Rendering clip ${completedCount + 1}...`
-        : 'Transcribing and analyzing video...';
+        : 'Processing video framing and action tracking...';
 
       updateStatusUI(msg, etaDisplay);
       const fillPct = Math.min(96, Math.max(4, (completedCount / TOTAL_EXPECTED_CLIPS) * 100));
@@ -925,7 +1008,7 @@ async function poll() {
     if (pollFailures > 20) {
       setMonitor('error', 'ERR');
       stopTimecode();
-      updateStatusUI('Lost connection to the server. Please check your connection and try again.', 'ERROR');
+      updateStatusUI('Lost connection to the server. Please check your connection.', 'ERROR');
       document.getElementById('startBtn').disabled = false;
       localStorage.removeItem('autoclip_active_job');
       jobId = null;

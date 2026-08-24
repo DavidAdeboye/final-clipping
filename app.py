@@ -12,7 +12,6 @@ os.environ["NUMEXPR_NUM_THREADS"] = "1"
 import cv2
 cv2.setNumThreads(1)
 
-import http.cookiejar
 import io
 import json
 import numpy as np
@@ -22,147 +21,18 @@ import subprocess
 import time
 import uuid
 import urllib.request
+import xml.etree.ElementTree as ET
+import html
 from typing import List, Tuple, Dict, Optional, Callable
 from pydantic import BaseModel, Field
 import mediapipe as mp
 from mediapipe.tasks import python as mp_python
 from mediapipe.tasks.python import vision as mp_vision
-from youtube_transcript_api import YouTubeTranscriptApi
-from groq import Groq
 from google import genai
 from google.genai import types
 
 MAX_ALLOWED_HOURS = 5
 MAX_ALLOWED_SECONDS = MAX_ALLOWED_HOURS * 3600
-
-_SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-_COOKIE_CANDIDATES = [
-    os.environ.get("YTDLP_COOKIES_PATH", ""),
-    "/etc/secrets/cookies.txt",
-    os.path.join(_SCRIPT_DIR, "cookies.txt"),
-    "cookies.txt",
-]
-
-COOKIE_FILE = next(
-    (p for p in _COOKIE_CANDIDATES if p and os.path.exists(p) and os.path.getsize(p) > 100),
-    None,
-)
-
-if COOKIE_FILE:
-    print(f"[Startup] Using YouTube cookies from: {COOKIE_FILE}")
-    YT_EXTRA_ARGS = ["--cookies", COOKIE_FILE]
-else:
-    print("[Startup] WARNING: No cookies.txt found — YouTube requests will run unauthenticated.")
-    YT_EXTRA_ARGS = []
-
-_PROXY_LIST = [p.strip() for p in os.environ.get("YTDLP_PROXIES", "").split(",") if p.strip()]
-if _PROXY_LIST:
-    print(f"[Startup] Loaded {len(_PROXY_LIST)} proxy option(s) for yt-dlp.")
-else:
-    print("[Startup] No YTDLP_PROXIES configured — yt-dlp will run without a proxy.")
-
-
-def _log_proxy(chosen: str) -> None:
-    _, _, host_port = chosen.rpartition("@")
-    print(f"[yt-dlp] Using proxy: {host_port or '(unparseable)'}")
-
-
-PROXY_STATS: Dict[str, Dict[str, int]] = {}
-_proxy_stats_lock = threading.Lock()
-
-
-def _proxy_host_port(proxy_url: Optional[str]) -> str:
-    if not proxy_url:
-        return "direct (no proxy)"
-    _, _, host_port = proxy_url.rpartition("@")
-    return host_port or "(unparseable)"
-
-
-def _record_proxy_result(proxy_url: Optional[str], success: bool) -> None:
-    key = _proxy_host_port(proxy_url)
-    with _proxy_stats_lock:
-        stats = PROXY_STATS.setdefault(key, {"success": 0, "fail": 0})
-        stats["success" if success else "fail"] += 1
-
-
-def get_proxy_health_summary() -> Dict[str, Dict[str, int]]:
-    with _proxy_stats_lock:
-        return {k: dict(v) for k, v in PROXY_STATS.items()}
-
-
-def print_proxy_health_summary() -> None:
-    summary = get_proxy_health_summary()
-    if not summary:
-        print("[proxy-health] No proxy attempts recorded yet.")
-        return
-    print("[proxy-health] Current process stats (resets on restart):")
-    for host_port, stats in sorted(summary.items(), key=lambda kv: kv[1]["fail"], reverse=True):
-        total = stats["success"] + stats["fail"]
-        rate = (stats["success"] / total * 100) if total else 0.0
-        print(f"  {host_port}: {stats['success']} ok / {stats['fail']} failed ({rate:.0f}% success, {total} total)")
-
-
-def _proxy_args() -> list:
-    if not _PROXY_LIST:
-        return []
-    chosen = random.choice(_PROXY_LIST)
-    _log_proxy(chosen)
-    return ["--proxy", chosen]
-
-
-def _proxy_pool_shuffled() -> list:
-    pool = list(_PROXY_LIST)
-    random.shuffle(pool)
-    return pool
-
-
-_AUTO = object()
-
-_BROWSER_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
-
-# IMPORTANT: cookies and player_client must never be mixed carelessly.
-# - android/ios clients authenticate like the native apps, not a browser.
-#   Sending browser cookies + a desktop UA on top of them looks like a
-#   forged/mismatched session to YouTube -> "Sign in to confirm you're not a bot".
-# - tv client must NEVER be paired with cookies either - the auth mismatch
-#   tends to invalidate the cookie session itself. BUT tv used unauthenticated
-#   commonly falls through to a plain, non-SABR itag 18 URL that streams over
-#   plain HTTPS with no PO token required - useful as a no-cookie fallback
-#   before reaching for web+cookies.
-# - web/mweb are the only clients cookies are meaningful for, and as of 2026
-#   the web client's GVS media fetch (not just format listing) is commonly
-#   gated behind a PO token we don't have, so it can still 403 at the CDN
-#   even after a clean extraction. Treat it as a last resort, not a fix-all.
-def yt_client_args(proxy=_AUTO, strategy: str = "app") -> list:
-    if proxy is _AUTO:
-        proxy_part = _proxy_args()
-    elif proxy:
-        _log_proxy(proxy)
-        proxy_part = ["--proxy", proxy]
-    else:
-        proxy_part = []
-
-    if strategy == "web_cookies" and COOKIE_FILE:
-        client_part = [
-            "--extractor-args", "youtube:player_client=web,mweb",
-            "--user-agent", _BROWSER_UA,
-        ] + YT_EXTRA_ARGS
-    elif strategy == "tv":
-        client_part = [
-            "--extractor-args", "youtube:player_client=tv",
-        ]
-    else:  # "app" - android/ios, unauthenticated
-        client_part = [
-            "--extractor-args", "youtube:player_client=android,ios",
-        ]
-
-    return [
-        "--rm-cache-dir",
-        "--no-check-certificates",
-        "--no-warnings",
-        "--prefer-free-formats",
-        "--geo-bypass",
-    ] + client_part + proxy_part
 
 MODELS_DIR = "models"
 JOBS_ROOT = "jobs"
@@ -268,226 +138,6 @@ def get_video_id(url: str) -> str:
             return match.group(1)
     raise ValueError("Could not extract a valid 11 character YouTube video ID.")
 
-
-def validate_video_duration(youtube_url: str) -> int:
-    print("Checking video duration...")
-    cmd = [
-        "yt-dlp",
-        "--dump-json",
-        "--skip-download"
-    ] + yt_client_args() + [youtube_url]
-
-    try:
-        result = subprocess.run(cmd, capture_output=True, text=True, check=True, timeout=45)
-        metadata = json.loads(result.stdout)
-        duration = int(metadata.get("duration", 0))
-
-        if duration == 0:
-            return duration
-
-        hours = duration // 3600
-        minutes = (duration % 3600) // 60
-        print(f"Video Length: {hours}h {minutes}m ({duration}s)")
-
-        if duration > MAX_ALLOWED_SECONDS:
-            raise ValueError(
-                f"Video duration ({hours}h {minutes}m) exceeds the limit of {MAX_ALLOWED_HOURS} hours."
-            )
-        return duration
-    except Exception:
-        print("[Warning] Duration check bypassed. Proceeding...")
-        return 0
-
-
-def _build_ytdlp_audio_cmd(youtube_url: str, temp_audio_file: str, player_clients: str,
-                            use_cookies: bool, proxy: Optional[str]) -> list:
-    cmd = [
-        "yt-dlp",
-        "-f", "ba[ext=m4a]/ba/b",
-        "-x",
-        "--audio-format", "mp3",
-        "-o", temp_audio_file,
-        "--retries", "3",
-        "--fragment-retries", "3",
-        "--socket-timeout", "15",
-        "--extractor-args", f"youtube:player_client={player_clients}",
-        "--rm-cache-dir",
-        "--no-check-certificates",
-        "--no-warnings",
-        "--prefer-free-formats",
-        "--geo-bypass",
-    ]
-    if use_cookies and COOKIE_FILE:
-        cmd += ["--cookies", COOKIE_FILE]
-    if proxy:
-        _log_proxy(proxy)
-        cmd += ["--proxy", proxy]
-    else:
-        print("[yt-dlp] No proxy (direct)")
-    cmd.append(youtube_url)
-    return cmd
-
-def transcribe_fast_groq(youtube_url: str, job_dir: str) -> str:
-    print("Downloading audio segment for Groq Whisper transcription...")
-    temp_audio_file = os.path.join(job_dir, "temp_whisper.mp3")
-
-    DOWNLOAD_TIMEOUT_SEC = 90
-    proxy_sequence = _proxy_pool_shuffled() if _PROXY_LIST else []
-
-    attempts = []
-    if COOKIE_FILE:
-        attempts.append({"client": "web", "use_cookies": True, "proxy": None, "label": "direct, cookies (web)"})
-    attempts.append({"client": "android,ios", "use_cookies": False, "proxy": None, "label": "direct, no cookies (android/ios)"})
-    attempts.append({"client": "tv", "use_cookies": False, "proxy": None, "label": "direct, no cookies (tv)"})
-    attempts.append({"client": "web", "use_cookies": False, "proxy": None, "label": "direct, no cookies (web)"})
-
-    for p in proxy_sequence[:2]:
-        attempts.append({"client": "android,ios", "use_cookies": False, "proxy": p, "label": "proxy, no cookies (android/ios)"})
-        attempts.append({"client": "tv", "use_cookies": False, "proxy": p, "label": "proxy, no cookies (tv)"})
-        if COOKIE_FILE:
-            attempts.append({"client": "web", "use_cookies": True, "proxy": p, "label": "proxy, cookies (web)"})
-
-    attempt_log = []
-    success = False
-
-    for i, a in enumerate(attempts):
-        proxy_desc = a["proxy"].rpartition("@")[2] if a["proxy"] else "direct"
-        print(f"[transcribe_fast_groq] Attempt {i + 1}/{len(attempts)}: {a['label']} via {proxy_desc}")
-        cmd = _build_ytdlp_audio_cmd(youtube_url, temp_audio_file, a["client"], a["use_cookies"], a["proxy"])
-
-        try:
-            res = subprocess.run(cmd, capture_output=True, text=True, timeout=DOWNLOAD_TIMEOUT_SEC)
-        except subprocess.TimeoutExpired:
-            attempt_log.append((a["label"], proxy_desc, f"timed out after {DOWNLOAD_TIMEOUT_SEC}s"))
-            _record_proxy_result(a["proxy"], success=False)
-            continue
-
-        if res.returncode == 0 and os.path.exists(temp_audio_file) and os.path.getsize(temp_audio_file) > 1000:
-            print(f"[transcribe_fast_groq] Succeeded on attempt {i + 1}: {a['label']} via {proxy_desc}")
-            _record_proxy_result(a["proxy"], success=True)
-            success = True
-            break
-
-        err_tail = (res.stderr or "").strip().splitlines()[-1] if (res.stderr or "").strip() else "unknown error"
-        attempt_log.append((a["label"], proxy_desc, err_tail))
-        _record_proxy_result(a["proxy"], success=False)
-
-    print_proxy_health_summary()
-
-    if not success:
-        if os.path.exists(temp_audio_file):
-            os.remove(temp_audio_file)
-        summary = "; ".join(f"[{label} / {proxy}] {err}" for label, proxy, err in attempt_log)
-        raise RuntimeError(f"Failed to capture audio from YouTube after {len(attempts)} attempts: {summary}")
-
-    try:
-        print("Transcribing audio via Groq Whisper large_v3_turbo...")
-        client = Groq(api_key=os.environ.get("GROQ_API_KEY"))
-        with open(temp_audio_file, "rb") as audio_f:
-            transcription = client.audio.transcriptions.create(
-                file=(temp_audio_file, audio_f.read()),
-                model="whisper-large-v3-turbo",
-                response_format="verbose_json",
-                temperature=0.0
-            )
-
-        formatted_lines = []
-        segments = getattr(transcription, "segments", [])
-        if isinstance(segments, list):
-            for seg in segments:
-                start_sec = int(seg.get("start", 0) if isinstance(seg, dict) else getattr(seg, "start", 0))
-                text = seg.get("text", "").strip() if isinstance(seg, dict) else getattr(seg, "text", "").strip()
-                formatted_lines.append(f"[{start_sec}s] {text}")
-        else:
-            formatted_lines.append(transcription.text)
-
-        return "\n".join(formatted_lines)
-    finally:
-        if os.path.exists(temp_audio_file):
-            os.remove(temp_audio_file)
-
-
-import xml.etree.ElementTree as ET
-import html
-
-
-def fetch_transcript_text(youtube_url: str, video_id: str, job_dir: str) -> str:
-    print(f"Checking captions directly for video: {video_id}...")
-
-    # Method 1: Scrape captionTracks directly from YouTube watch page HTML
-    try:
-        watch_url = f"https://www.youtube.com/watch?v={video_id}"
-        req = urllib.request.Request(
-            watch_url,
-            headers={
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
-                "Accept-Language": "en-US,en;q=0.9",
-            }
-        )
-        with urllib.request.urlopen(req, timeout=12) as response:
-            html_content = response.read().decode("utf-8")
-
-        match = re.search(r'"captionTracks":\s*(\[.*?\])', html_content)
-        if match:
-            caption_tracks = json.loads(match.group(1))
-            # Pick English track if available, else take the first available language track
-            selected_track = next(
-                (t for t in caption_tracks if t.get("languageCode", "").startswith("en")),
-                caption_tracks[0]
-            )
-            base_url = selected_track.get("baseUrl")
-            if base_url:
-                cap_req = urllib.request.Request(
-                    base_url,
-                    headers={"User-Agent": "Mozilla/5.0"}
-                )
-                with urllib.request.urlopen(cap_req, timeout=12) as cap_resp:
-                    xml_data = cap_resp.read().decode("utf-8")
-                
-                root = ET.fromstring(xml_data)
-                lines = []
-                for child in root.findall("text"):
-                    start = int(float(child.attrib.get("start", 0)))
-                    text = html.unescape(child.text or "").replace("\n", " ").strip()
-                    if text:
-                        lines.append(f"[{start}s] {text}")
-                
-                if lines:
-                    print(f"Captions successfully extracted directly via YouTube TimedText ({len(lines)} lines).")
-                    return "\n".join(lines)
-    except Exception as e:
-        print(f"[TimedText Scraper] Direct page extraction skipped: {e}")
-
-    # Method 2: Public edge transcript API (Zero-auth Cloudflare edge cache)
-    try:
-        edge_api_url = f"https://youtube-transcript.ai/transcript/{video_id}.txt"
-        req = urllib.request.Request(edge_api_url, headers={"User-Agent": "Mozilla/5.0"})
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            text = resp.read().decode("utf-8")
-            if text and len(text) > 100:
-                print("Captions successfully retrieved via Edge Transcript API.")
-                return text
-    except Exception as e:
-        print(f"[Edge API] Skipped: {e}")
-
-    # Method 3: youtube-transcript-api library fallback
-    try:
-        if hasattr(YouTubeTranscriptApi, "get_transcript"):
-            transcript_list = YouTubeTranscriptApi.get_transcript(video_id)
-        else:
-            ytt_api = YouTubeTranscriptApi()
-            fetched = ytt_api.fetch(video_id)
-            transcript_list = fetched.to_raw_data()
-
-        lines = [f"[{int(item['start'])}s] {item['text'].replace(chr(10), ' ')}" for item in transcript_list]
-        if lines:
-            print("Captions successfully retrieved via youtube-transcript-api.")
-            return "\n".join(lines)
-    except Exception as e:
-        print(f"[youtube-transcript-api] Skipped: {e}")
-
-    # Method 4: Final fallback to Audio Download + Groq Whisper
-    return transcribe_fast_groq(youtube_url, job_dir)
 
 def find_viral_moments(transcript_text: str) -> HighlightResponse:
     print("Analyzing highlights with Gemini using viral short form criteria...")
@@ -689,7 +339,7 @@ def _prompt_for_box_segments(
     ask = prompt_fn or (lambda q: input(q).strip())
     frames = extract_preview_frames(video_path, job_dir, num_frames=3)
 
-    print(f"\n[{box_label} Picker] Preview frames saved -- open these in any image viewer:")
+    print(f"\n[{box_label} Picker] Preview frames saved:")
     for ts, path in frames:
         print(f"  t={ts}s -> {path}")
 
@@ -1148,75 +798,25 @@ def render_gimbal_tracked_video(
             os.remove(temp_processed_video)
 
 
-def process_clip(video_url: str, clip: ViralClip, index: int, job_dir: str,
-                  mode: str = "split", aspect_ratio: str = "9:16",
-                  prompt_fn: Optional[Callable[[str], str]] = None):
+def process_clip_from_file(
+    raw_video_path: str,
+    clip: ViralClip,
+    index: int,
+    job_dir: str,
+    mode: str = "split",
+    aspect_ratio: str = "9:16",
+    prompt_fn: Optional[Callable[[str], str]] = None
+):
     clean_title = re.sub(r'[^a-zA-Z0-9]', '_', clip.title)[:25]
     clean_ratio = aspect_ratio.replace(':', '_')
-    temp_raw = os.path.join(job_dir, f"temp_raw_{index}.mp4")
     temp_paced = os.path.join(job_dir, f"temp_paced_{index}.mp4")
     final_output = os.path.join(job_dir, f"clip_{index}_{clean_title}_{clean_ratio}.mp4")
 
-    print(f"\nProcessing Clip {index}: {clip.title}")
-    print(f"Time: {clip.start_seconds}s to {clip.end_seconds}s | Virality Score: {clip.virality_score}/100")
+    print(f"\nProcessing Uploaded Clip {index}: {clip.title}")
     print(f"Hook: {clip.hook}")
-    print(f"Reasoning: {clip.reasoning}")
-
-    SLICE_TIMEOUT_SEC = 240
-    slice_proxy_sequence = _proxy_pool_shuffled() if _PROXY_LIST else [None]
-
-    # Strategy order matters: app (android/ios, no cookies) is cheapest and
-    # works for most public video. tv (no cookies) is the current best fix
-    # for the SABR 403-on-media-fetch case - it commonly falls through to a
-    # plain itag 18 URL with no PO token needed. web_cookies is last resort
-    # for gated content, and can still 403 at the CDN even on a clean
-    # extraction since the web client's media fetch is PO-token gated.
-    strategies = ["app", "tv"] + (["web_cookies"] if COOKIE_FILE else [])
-    attempt_plan = []
-    for proxy_choice in (slice_proxy_sequence[:2] or [None]):
-        for strat in strategies:
-            attempt_plan.append((proxy_choice, strat))
-    attempt_plan = attempt_plan[:6]
-
-    download_success = False
-    for attempt, (proxy_choice, strategy) in enumerate(attempt_plan):
-        slice_cmd = [
-            "yt-dlp",
-            "-f", "bestvideo[height<=720]+bestaudio/best[height<=720]/best",
-            "--download-sections", f"*{clip.start_seconds}-{clip.end_seconds}",
-            "--merge-output-format", "mp4",
-            "--force-keyframes-at-cuts",
-            "--retries", "10",
-            "--fragment-retries", "10",
-            "--socket-timeout", "25",
-        ] + yt_client_args(proxy=proxy_choice, strategy=strategy) + [video_url, "-o", temp_raw]
-
-        try:
-            print(f"Downloading section (Attempt {attempt + 1}/{len(attempt_plan)}, {strategy})...")
-            subprocess.run(slice_cmd, check=True, timeout=SLICE_TIMEOUT_SEC)
-            if os.path.exists(temp_raw) and os.path.getsize(temp_raw) > 50000:
-                download_success = True
-                _record_proxy_result(proxy_choice, success=True)
-                break
-        except subprocess.TimeoutExpired:
-            print(f"[Warning] Clip download timed out after {SLICE_TIMEOUT_SEC}s.")
-            _record_proxy_result(proxy_choice, success=False)
-            time.sleep(4)
-        except subprocess.CalledProcessError as e:
-            print(f"[Warning] Download attempt failed: {e}. Retrying...")
-            _record_proxy_result(proxy_choice, success=False)
-            time.sleep(4)
-
-    print_proxy_health_summary()
-
-    if not download_success:
-        print(f"Skipping Clip {index} due to persistent CDN download error.")
-        if os.path.exists(temp_raw):
-            os.remove(temp_raw)
-        return
 
     try:
-        paced_file = remove_silence(temp_raw, temp_paced, min_silence_len=0.6)
+        paced_file = remove_silence(raw_video_path, temp_paced, min_silence_len=0.6)
 
         if aspect_ratio == "16:9":
             ffmpeg_cmd = [
@@ -1245,55 +845,6 @@ def process_clip(video_url: str, clip: ViralClip, index: int, job_dir: str,
 
         print(f"SUCCESS: Exported {final_output}")
     finally:
-        for tmp in [temp_raw, temp_paced]:
+        for tmp in [raw_video_path, temp_paced]:
             if os.path.exists(tmp):
                 os.remove(tmp)
-
-
-def run_pipeline(youtube_url: str, aspect_ratio: str = "9:16", mode: str = "split",
-                  cleanup_on_success: bool = False, premium: bool = False,
-                  prompt_fn: Optional[Callable[[str], str]] = None,
-                  job_id: Optional[str] = None) -> str:
-    sweep_expired_jobs()
-
-    job_id = job_id or str(uuid.uuid4())
-    job_dir = os.path.join(JOBS_ROOT, job_id)
-    os.makedirs(job_dir, exist_ok=True)
-    _write_job_metadata(job_dir, job_id, premium=premium)
-    print(f"[Job {job_id}] Starting pipeline...")
-    
-    try:
-        video_id = get_video_id(youtube_url)
-        validate_video_duration(youtube_url)
-        transcript = fetch_transcript_text(youtube_url, video_id, job_dir)
-        highlights = find_viral_moments(transcript)
-
-        for idx, clip in enumerate(highlights.clips, start=1):
-            process_clip(youtube_url, clip, idx, job_dir, mode=mode, aspect_ratio=aspect_ratio, prompt_fn=prompt_fn)
-            if idx < len(highlights.clips):
-                print("Cooling down before next clip to avoid rate limiting...")
-                time.sleep(12)
-
-        print(f"[Job {job_id}] Done. Output: {job_dir}")
-        return job_dir
-
-    except Exception:
-        raise
-    finally:
-        _cleanup_job_temp_files(job_dir)
-        if cleanup_on_success:
-            shutil.rmtree(job_dir, ignore_errors=True)
-
-
-if __name__ == "__main__":
-    url = input("Enter YouTube URL: ").strip()
-    ratio_choice = input("Aspect Ratio [9:16, 1:1, 16:9] (default 9:16): ").strip() or "9:16"
-    layout_mode = input(
-        "Layout Mode ['split' (gimbal podcast stack), 'cut' (single tracking), "
-        "'speaker_switch' (active-speaker cut), 'gaming' (manual facecam picker + gameplay), "
-        "'gaming_split_noface' (stacked top action + bottom hotbar), "
-        "'reaction' (manual PIP picker + main footage)] "
-        "(default split): "
-    ).strip() or "split"
-
-    run_pipeline(url, aspect_ratio=ratio_choice, mode=layout_mode)
