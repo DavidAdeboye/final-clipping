@@ -158,10 +158,12 @@ def find_viral_moments(transcript_text: str) -> HighlightResponse:
     {transcript_text}
     """
 
+    # Up-to-date Gemini 3 and 2.5 series priority stack
     priority_models = [
-        "gemini-flash-latest",
-        "gemini-2.5-flash-lite",
-        "gemini-pro-latest",
+        "gemini-3.7-flash",
+        "gemini-3.5-flash",
+        "gemini-3.1-pro",
+        "gemini-2.5-flash",
     ]
 
     try:
@@ -170,7 +172,7 @@ def find_viral_moments(transcript_text: str) -> HighlightResponse:
             for m in client.models.list()
             if hasattr(m, "supported_actions") and "generateContent" in m.supported_actions
         ]
-        excluded_keywords = ["tts", "gemma", "image", "audio", "embedding", "vision", "live", "robotics"]
+        excluded_keywords = ["tts", "gemma", "image", "audio", "embedding", "vision", "live", "robotics", "veo"]
         available_models = [
             m for m in available_models
             if not any(kw in m.lower() for kw in excluded_keywords)
@@ -199,7 +201,6 @@ def find_viral_moments(transcript_text: str) -> HighlightResponse:
             continue
 
     raise RuntimeError("Failed to generate highlights with available models.")
-
 
 def remove_silence(
     input_path: str,
