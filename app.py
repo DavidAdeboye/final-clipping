@@ -8,6 +8,7 @@ import subprocess
 import time
 import uuid
 import urllib.request
+import urllib.parse
 from typing import List, Tuple, Dict, Optional, Callable
 import html
 import xml.etree.ElementTree as ET
