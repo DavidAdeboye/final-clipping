@@ -285,9 +285,8 @@ def _build_ytdlp_audio_cmd(youtube_url: str, temp_audio_file: str, player_client
         "-x",
         "--audio-format", "mp3",
         "-o", temp_audio_file,
-        "--socket-timeout", "20",
-        "--retries", "3",
-        "--fragment-retries", "3",
+        "--retries", "10",
+        "--fragment-retries", "10",
         "--extractor-args", f"youtube:player_client={player_clients}",
         "--rm-cache-dir",
         "--no-check-certificates",
@@ -310,7 +309,7 @@ def transcribe_fast_groq(youtube_url: str, job_dir: str) -> str:
     print("Downloading audio segment for Groq Whisper transcription...")
     temp_audio_file = os.path.join(job_dir, "temp_whisper.mp3")
 
-    DOWNLOAD_TIMEOUT_SEC = 90
+    DOWNLOAD_TIMEOUT_SEC = 300
     COOKIE_CLIENTS = "ios,android,web"
     NO_COOKIE_CLIENTS = "ios,android,web"
 
@@ -319,9 +318,9 @@ def transcribe_fast_groq(youtube_url: str, job_dir: str) -> str:
     attempts = []
     if COOKIE_FILE:
         attempts.append({"client": COOKIE_CLIENTS, "use_cookies": True, "proxy": None,
-                          "label": "direct, cookies (tv)"})
+                          "label": "direct, cookies (ios/android/web)"})
     attempts.append({"client": NO_COOKIE_CLIENTS, "use_cookies": False, "proxy": None,
-                      "label": "direct, no cookies (tv)"})
+                      "label": "direct, no cookies (ios/android/web)"})
     for p in proxy_sequence[:3]:
         attempts.append({"client": COOKIE_CLIENTS if COOKIE_FILE else NO_COOKIE_CLIENTS,
                           "use_cookies": bool(COOKIE_FILE), "proxy": p,
