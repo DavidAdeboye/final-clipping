@@ -9,7 +9,8 @@ import time
 import uuid
 import urllib.request
 from typing import List, Tuple, Dict, Optional, Callable
-
+import html
+import xml.etree.ElementTree as ET
 # Limit thread concurrency to avoid OOM on constrained server tiers
 os.environ["OMP_NUM_THREADS"] = "1"
 os.environ["OPENBLAS_NUM_THREADS"] = "1"
@@ -145,7 +146,6 @@ def extract_captions(video_url: str, job_dir: str) -> str:
     print("Fetching video captions directly from YouTube...")
     video_id = get_video_id(video_url)
 
-    # 1. Fetch video page HTML to locate the caption track stream URL
     page_req = urllib.request.Request(
         f"https://www.youtube.com/watch?v={video_id}",
         headers={
@@ -160,14 +160,11 @@ def extract_captions(video_url: str, job_dir: str) -> str:
     except Exception as e:
         raise RuntimeError(f"Could not reach YouTube video page: {e}")
 
-    # 2. Extract caption tracks from YouTube initial player response JSON
-    match = re.search(r'"captionTracks":\s*(\[.*?\])', html_content)
     caption_url = None
-
+    match = re.search(r'"captionTracks":\s*(\[.*?\])', html_content)
     if match:
         try:
             tracks = json.loads(match.group(1))
-            # Prioritize English tracks
             for t in tracks:
                 lang = t.get("languageCode", "").lower()
                 if lang.startswith("en"):
@@ -178,11 +175,9 @@ def extract_captions(video_url: str, job_dir: str) -> str:
         except Exception:
             pass
 
-    # Fallback to direct timedtext endpoint if player response JSON was obfuscated
     if not caption_url:
         caption_url = f"https://www.youtube.com/api/timedtext?v={video_id}&lang=en"
 
-    # 3. Download the XML caption payload
     try:
         cap_req = urllib.request.Request(
             caption_url,
@@ -191,7 +186,6 @@ def extract_captions(video_url: str, job_dir: str) -> str:
         with urllib.request.urlopen(cap_req, timeout=15) as resp:
             xml_data = resp.read().decode("utf-8", errors="ignore")
 
-        # 4. Parse XML text elements
         root = ET.fromstring(xml_data)
         texts = []
         for text_el in root.findall(".//text"):
@@ -205,10 +199,9 @@ def extract_captions(video_url: str, job_dir: str) -> str:
             print(f"Retrieved {len(full_transcript)} characters of transcript.")
             return full_transcript
     except Exception as e:
-        print(f"TimedText direct parse notice: {e}")
+        print(f"TimedText parse error: {e}")
 
     raise RuntimeError("No caption track found for this video. Please test with a video that has English subtitles enabled.")
-
 
 def find_viral_moments(transcript_text: str) -> HighlightResponse:
     print("Analyzing highlights with Gemini using viral short form criteria...")
