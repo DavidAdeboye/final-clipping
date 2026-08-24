@@ -36,10 +36,10 @@ MAX_ALLOWED_SECONDS = MAX_ALLOWED_HOURS * 3600
 
 _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 _COOKIE_CANDIDATES = [
-    os.environ.get("YTDLP_COOKIES_PATH", ""),   # explicit override via env var
-    "/etc/secrets/cookies.txt",                  # Render "Secret Files" mount point
-    os.path.join(_SCRIPT_DIR, "cookies.txt"),    # next to app.py, regardless of cwd
-    "cookies.txt",                                # last resort: relative to cwd
+    os.environ.get("YTDLP_COOKIES_PATH", ""),
+    "/etc/secrets/cookies.txt",
+    os.path.join(_SCRIPT_DIR, "cookies.txt"),
+    "cookies.txt",
 ]
 
 COOKIE_FILE = next(
@@ -51,8 +51,7 @@ if COOKIE_FILE:
     print(f"[Startup] Using YouTube cookies from: {COOKIE_FILE}")
     YT_EXTRA_ARGS = ["--cookies", COOKIE_FILE]
 else:
-    print("[Startup] WARNING: No cookies.txt found — YouTube requests will run unauthenticated "
-          "and are more likely to hit 429/bot-check errors.")
+    print("[Startup] WARNING: No cookies.txt found — YouTube requests will run unauthenticated.")
     YT_EXTRA_ARGS = []
 
 _PROXY_LIST = [p.strip() for p in os.environ.get("YTDLP_PROXIES", "").split(",") if p.strip()]
@@ -129,7 +128,8 @@ def yt_client_args(proxy=_AUTO) -> list:
         proxy_part = []
 
     return [
-        "--extractor-args", "youtube:player_client=tv,web;rustypipe_bg_pot_cache=1",
+        "--user-agent", "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1",
+        "--extractor-args", "youtube:player_client=mweb;player_skip=webpage,configs",
         "--rm-cache-dir",
         "--no-check-certificates",
         "--no-warnings",
@@ -284,7 +284,8 @@ def _build_ytdlp_audio_cmd(youtube_url: str, temp_audio_file: str, player_client
         "--retries", "3",
         "--fragment-retries", "3",
         "--socket-timeout", "15",
-        "--extractor-args", f"youtube:player_client={player_clients}",
+        "--user-agent", "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1",
+        "--extractor-args", f"youtube:player_client={player_clients};player_skip=webpage,configs",
         "--rm-cache-dir",
         "--no-check-certificates",
         "--no-warnings",
@@ -296,6 +297,8 @@ def _build_ytdlp_audio_cmd(youtube_url: str, temp_audio_file: str, player_client
     if proxy:
         _log_proxy(proxy)
         cmd += ["--proxy", proxy]
+    else:
+        print("[yt-dlp] No proxy (direct)")
     cmd.append(youtube_url)
     return cmd
 
@@ -309,12 +312,12 @@ def transcribe_fast_groq(youtube_url: str, job_dir: str) -> str:
 
     attempts = []
     if COOKIE_FILE:
-        attempts.append({"client": "web", "use_cookies": True, "proxy": None, "label": "direct, cookies (web)"})
-    attempts.append({"client": "tv", "use_cookies": False, "proxy": None, "label": "direct, no cookies (tv)"})
+        attempts.append({"client": "mweb", "use_cookies": True, "proxy": None, "label": "direct, cookies (mweb)"})
+    attempts.append({"client": "mweb", "use_cookies": False, "proxy": None, "label": "direct, no cookies (mweb)"})
     attempts.append({"client": "android", "use_cookies": False, "proxy": None, "label": "direct, no cookies (android)"})
 
     for p in proxy_sequence[:2]:
-        attempts.append({"client": "web,tv", "use_cookies": bool(COOKIE_FILE), "proxy": p, "label": "proxy (web/tv)"})
+        attempts.append({"client": "mweb", "use_cookies": bool(COOKIE_FILE), "proxy": p, "label": "proxy (mweb)"})
 
     attempt_log = []
     success = False
@@ -342,39 +345,6 @@ def transcribe_fast_groq(youtube_url: str, job_dir: str) -> str:
         _record_proxy_result(a["proxy"], success=False)
 
     print_proxy_health_summary()
-
-    # Multi mirror fallback (Cobalt v10 + Piped Stream APIs)
-    if not success:
-        print("[transcribe_fast_groq] Direct downloads failed. Using external audio stream fallback...")
-        video_id = get_video_id(youtube_url)
-
-        # 1. Try Piped API
-        piped_instances = [
-            "https://pipedapi.kavin.rocks",
-            "https://api.piped.privacydev.net",
-            "https://piped-api.lunar.icu"
-        ]
-        for p_url in piped_instances:
-            try:
-                req = urllib.request.Request(f"{p_url}/streams/{video_id}", headers={"User-Agent": "Mozilla/5.0"})
-                with urllib.request.urlopen(req, timeout=12) as resp:
-                    data = json.loads(resp.read().decode())
-                    audio_streams = data.get("audioStreams", [])
-                    if audio_streams:
-                        stream_url = audio_streams[0]["url"]
-                        ffmpeg_cmd = [
-                            "ffmpeg", "-y", "-i", stream_url,
-                            "-vn", "-ar", "16000", "-ac", "1", "-b:a", "64k",
-                            temp_audio_file
-                        ]
-                        subprocess.run(ffmpeg_cmd, check=True, timeout=60)
-                        if os.path.exists(temp_audio_file) and os.path.getsize(temp_audio_file) > 1000:
-                            success = True
-                            print(f"[transcribe_fast_groq] Audio captured via Piped ({p_url}).")
-                            break
-            except Exception as e:
-                print(f"[transcribe_fast_groq] Piped mirror {p_url} failed: {e}")
-                continue
 
     if not success:
         if os.path.exists(temp_audio_file):
@@ -408,6 +378,7 @@ def transcribe_fast_groq(youtube_url: str, job_dir: str) -> str:
         if os.path.exists(temp_audio_file):
             os.remove(temp_audio_file)
 
+
 def fetch_transcript_text(youtube_url: str, video_id: str, job_dir: str) -> str:
     print(f"Checking captions for video: {video_id}...")
 
@@ -421,6 +392,27 @@ def fetch_transcript_text(youtube_url: str, video_id: str, job_dir: str) -> str:
                     pass
 
     try:
+        # 1. First attempt: Direct transcript extraction with cookies
+        try:
+            if hasattr(YouTubeTranscriptApi, "get_transcript"):
+                transcript_list = YouTubeTranscriptApi.get_transcript(video_id, cookies=COOKIE_FILE)
+            else:
+                ytt_api = YouTubeTranscriptApi()
+                fetched = ytt_api.fetch(video_id, cookies=COOKIE_FILE)
+                transcript_list = fetched.to_raw_data()
+
+            formatted_lines = []
+            for item in transcript_list:
+                start = int(item['start'])
+                text = item['text'].replace('\n', ' ')
+                formatted_lines.append(f"[{start}s] {text}")
+            if formatted_lines:
+                print("Captions successfully retrieved via YouTubeTranscriptApi.")
+                return "\n".join(formatted_lines)
+        except Exception as transcript_err:
+            print(f"[Warning] YouTubeTranscriptApi skipped: {transcript_err}")
+
+        # 2. Second attempt: Direct subtitle file download via yt-dlp
         try:
             sub_prefix = os.path.join(job_dir, "temp_subs")
             sub_cmd = [
@@ -462,23 +454,7 @@ def fetch_transcript_text(youtube_url: str, video_id: str, job_dir: str) -> str:
         except Exception:
             pass
 
-        try:
-            if hasattr(YouTubeTranscriptApi, "get_transcript"):
-                transcript_list = YouTubeTranscriptApi.get_transcript(video_id)
-            else:
-                ytt_api = YouTubeTranscriptApi()
-                fetched = ytt_api.fetch(video_id)
-                transcript_list = fetched.to_raw_data()
-
-            formatted_lines = []
-            for item in transcript_list:
-                start = int(item['start'])
-                text = item['text'].replace('\n', ' ')
-                formatted_lines.append(f"[{start}s] {text}")
-            return "\n".join(formatted_lines)
-        except Exception:
-            pass
-
+        # 3. Third attempt: Fallback to audio download + Groq Whisper
         return transcribe_fast_groq(youtube_url, job_dir)
 
     finally:
