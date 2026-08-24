@@ -118,6 +118,7 @@ def _proxy_pool_shuffled() -> list:
 
 _AUTO = object()
 
+_BROWSER_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
 
 def yt_client_args(proxy=_AUTO) -> list:
     if proxy is _AUTO:
@@ -129,14 +130,15 @@ def yt_client_args(proxy=_AUTO) -> list:
         proxy_part = []
 
     return [
-        "--extractor-args", "youtube:player_client=mweb,web,tv",
+        "--user-agent", _BROWSER_UA,
+        "--downloader-args", f"ffmpeg_i:-user_agent '{_BROWSER_UA}'",
+        "--extractor-args", "youtube:player_client=web,tv",
         "--rm-cache-dir",
         "--no-check-certificates",
         "--no-warnings",
         "--prefer-free-formats",
         "--geo-bypass",
     ] + YT_EXTRA_ARGS + proxy_part
-
 
 MODELS_DIR = "models"
 JOBS_ROOT = "jobs"
@@ -1140,15 +1142,15 @@ def process_clip(video_url: str, clip: ViralClip, index: int, job_dir: str,
     for attempt in range(slice_max_attempts):
         proxy_choice = slice_proxy_sequence[attempt]
         slice_cmd = [
-                "yt-dlp",
-                "-f", "bestvideo[height<=720]+bestaudio/best[height<=720]/best",
-                "--download-sections", f"*{clip.start_seconds}-{clip.end_seconds}",
-                "--merge-output-format", "mp4",
-                "--force-keyframes-at-cuts",
-                "--retries", "5",
-                "--fragment-retries", "5",
-                "--socket-timeout", "25"
-            ] + yt_client_args(proxy=proxy_choice) + [video_url, "-o", temp_raw]
+            "yt-dlp",
+            "-f", "bestvideo[height<=720]+bestaudio/best[height<=720]/best",
+            "--download-sections", f"*{clip.start_seconds}-{clip.end_seconds}",
+            "--merge-output-format", "mp4",
+            "--force-keyframes-at-cuts",
+            "--retries", "5",
+            "--fragment-retries", "5",
+            "--socket-timeout", "25"
+        ] + yt_client_args(proxy=proxy_choice) + [video_url, "-o", temp_raw]
 
         try:
             print(f"Downloading section (Attempt {attempt + 1}/{slice_max_attempts})...")
