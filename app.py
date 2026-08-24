@@ -1,5 +1,6 @@
 import os
 import random
+import threading
 
 # Limit thread concurrency so Render free tier does not crash from OOM
 os.environ["OMP_NUM_THREADS"] = "1"
@@ -77,6 +78,44 @@ def _log_proxy(chosen: str) -> None:
     # traced back to a specific proxy without leaking secrets into logs.
     _, _, host_port = chosen.rpartition("@")
     print(f"[yt-dlp] Using proxy: {host_port or '(unparseable)'}")
+
+
+# In-memory proxy health tracking, keyed by host:port (never credentials).
+# Reset on every process restart — this is a running-process eyeball tool,
+# not a persisted metric store.
+PROXY_STATS: Dict[str, Dict[str, int]] = {}
+_proxy_stats_lock = threading.Lock()
+
+
+def _proxy_host_port(proxy_url: Optional[str]) -> str:
+    if not proxy_url:
+        return "direct (no proxy)"
+    _, _, host_port = proxy_url.rpartition("@")
+    return host_port or "(unparseable)"
+
+
+def _record_proxy_result(proxy_url: Optional[str], success: bool) -> None:
+    key = _proxy_host_port(proxy_url)
+    with _proxy_stats_lock:
+        stats = PROXY_STATS.setdefault(key, {"success": 0, "fail": 0})
+        stats["success" if success else "fail"] += 1
+
+
+def get_proxy_health_summary() -> Dict[str, Dict[str, int]]:
+    with _proxy_stats_lock:
+        return {k: dict(v) for k, v in PROXY_STATS.items()}
+
+
+def print_proxy_health_summary() -> None:
+    summary = get_proxy_health_summary()
+    if not summary:
+        print("[proxy-health] No proxy attempts recorded yet.")
+        return
+    print("[proxy-health] Current process stats (resets on restart):")
+    for host_port, stats in sorted(summary.items(), key=lambda kv: kv[1]["fail"], reverse=True):
+        total = stats["success"] + stats["fail"]
+        rate = (stats["success"] / total * 100) if total else 0.0
+        print(f"  {host_port}: {stats['success']} ok / {stats['fail']} failed ({rate:.0f}% success, {total} total)")
 
 
 def _proxy_args() -> list:
@@ -255,67 +294,99 @@ def validate_video_duration(youtube_url: str) -> int:
         return 0
 
 
+def _build_ytdlp_audio_cmd(youtube_url: str, temp_audio_file: str, player_clients: str,
+                            use_cookies: bool, proxy: Optional[str]) -> list:
+    """Fresh yt-dlp command for an audio-only download. player_clients and
+    use_cookies are passed explicitly (rather than read off the global
+    COOKIE_FILE-derived defaults) so callers can deliberately test a
+    cookie-less / different-client combo instead of always repeating the
+    same one."""
+    cmd = [
+        "yt-dlp",
+        "-f", "ba/b",
+        "-x",
+        "--audio-format", "mp3",
+        "-o", temp_audio_file,
+        "--extractor-args", f"youtube:player_client={player_clients}",
+        "--no-check-certificates",
+        "--no-warnings",
+        "--prefer-free-formats",
+        "--geo-bypass",
+    ]
+    if use_cookies and COOKIE_FILE:
+        cmd += ["--cookies", COOKIE_FILE]
+    if proxy:
+        _log_proxy(proxy)
+        cmd += ["--proxy", proxy]
+    else:
+        print("[yt-dlp] No proxy (direct)")
+    cmd.append(youtube_url)
+    return cmd
+
+
 def transcribe_fast_groq(youtube_url: str, job_dir: str) -> str:
     print("Downloading audio segment for Groq Whisper transcription...")
     temp_audio_file = os.path.join(job_dir, "temp_whisper.mp3")
 
     DOWNLOAD_TIMEOUT_SEC = 180  # audio-only download; if a proxy is dead/slow, fail fast instead of hanging the job
-    last_stderr = ""
+    COOKIE_CLIENTS = "web,mweb"       # honor --cookies
+    NO_COOKIE_CLIENTS = "ios,android,mweb"  # native app clients; ignore --cookies
 
-    # Cycle through DISTINCT proxies across retries (not random re-picks,
-    # which can land on the same proxy twice and waste a retry) so a single
-    # flagged/dead proxy can't eat more than one attempt.
-    proxy_sequence = _proxy_pool_shuffled() if _PROXY_LIST else [None]
-    max_attempts = min(4, len(proxy_sequence))
+    proxy_sequence = _proxy_pool_shuffled() if _PROXY_LIST else []
 
-    for attempt in range(max_attempts):
-        proxy_choice = proxy_sequence[attempt]
-        cmd = [
-            "yt-dlp",
-            "-f", "ba/b",
-            "-x",
-            "--audio-format", "mp3",
-            "-o", temp_audio_file,
-        ] + yt_client_args(proxy=proxy_choice) + [youtube_url]
+    # Attempt plan, in order. We deliberately interleave "no proxy at all"
+    # attempts with proxied ones, and "with cookies" with "without cookies",
+    # so a failure tells us WHICH variable mattered instead of just "it
+    # failed again". Direct (no-proxy) attempts go first since they're the
+    # cheapest way to find out whether the proxy pool itself is flagged.
+    attempts = []
+    if COOKIE_FILE:
+        attempts.append({"client": COOKIE_CLIENTS, "use_cookies": True, "proxy": None,
+                          "label": "direct, cookies (web/mweb)"})
+    attempts.append({"client": NO_COOKIE_CLIENTS, "use_cookies": False, "proxy": None,
+                      "label": "direct, no cookies (ios/android/mweb)"})
+    for p in proxy_sequence[:3]:
+        attempts.append({"client": COOKIE_CLIENTS if COOKIE_FILE else NO_COOKIE_CLIENTS,
+                          "use_cookies": bool(COOKIE_FILE), "proxy": p,
+                          "label": f"proxy, {'cookies' if COOKIE_FILE else 'no cookies'}"})
+    for p in proxy_sequence[3:5]:
+        attempts.append({"client": NO_COOKIE_CLIENTS, "use_cookies": False, "proxy": p,
+                          "label": "proxy, no cookies"})
+
+    attempt_log = []  # (label, proxy host:port or 'direct', short error) for the final error message
+    success = False
+
+    for i, a in enumerate(attempts):
+        proxy_desc = a["proxy"].rpartition("@")[2] if a["proxy"] else "direct"
+        print(f"[transcribe_fast_groq] Attempt {i + 1}/{len(attempts)}: {a['label']} via {proxy_desc}")
+        cmd = _build_ytdlp_audio_cmd(youtube_url, temp_audio_file, a["client"], a["use_cookies"], a["proxy"])
 
         try:
             res = subprocess.run(cmd, capture_output=True, text=True, timeout=DOWNLOAD_TIMEOUT_SEC)
         except subprocess.TimeoutExpired:
-            print(f"[Warning] yt-dlp audio download timed out after {DOWNLOAD_TIMEOUT_SEC}s (attempt {attempt + 1}/{max_attempts}). Retrying with a different proxy...")
-            last_stderr = f"Timed out after {DOWNLOAD_TIMEOUT_SEC}s"
+            print(f"[Warning] Attempt {i + 1} ({a['label']} via {proxy_desc}) timed out after {DOWNLOAD_TIMEOUT_SEC}s.")
+            attempt_log.append((a["label"], proxy_desc, f"timed out after {DOWNLOAD_TIMEOUT_SEC}s"))
+            _record_proxy_result(a["proxy"], success=False)
             continue
 
         if res.returncode == 0:
+            print(f"[transcribe_fast_groq] Succeeded on attempt {i + 1}: {a['label']} via {proxy_desc}")
+            _record_proxy_result(a["proxy"], success=True)
+            success = True
             break
-        last_stderr = res.stderr or last_stderr
-    else:
-        # All attempts failed — try the fallback client once, on a proxy we
-        # haven't already burned above (if we have more than max_attempts
-        # in the pool), before giving up.
-        fallback_client = "web" if COOKIE_FILE else "ios"
-        fallback_proxy = proxy_sequence[max_attempts] if len(proxy_sequence) > max_attempts else (proxy_sequence[0] if proxy_sequence[0] else None)
-        fallback_cmd = [
-            "yt-dlp",
-            "-f", "140/ba/b",
-            "-x",
-            "--audio-format", "mp3",
-            "--extractor-args", f"youtube:player_client={fallback_client}",
-            "-o", temp_audio_file,
-        ] + YT_EXTRA_ARGS + (["--proxy", fallback_proxy] if fallback_proxy else []) + [youtube_url]
-        if fallback_proxy:
-            _log_proxy(fallback_proxy)
-        try:
-            res_fb = subprocess.run(fallback_cmd, capture_output=True, text=True, timeout=DOWNLOAD_TIMEOUT_SEC)
-        except subprocess.TimeoutExpired:
-            if os.path.exists(temp_audio_file):
-                os.remove(temp_audio_file)
-            raise RuntimeError(f"Failed to capture audio from YouTube: fallback attempt also timed out after {DOWNLOAD_TIMEOUT_SEC}s")
 
-        if res_fb.returncode != 0:
-            err_msg = res_fb.stderr or last_stderr or "Unknown download error"
-            if os.path.exists(temp_audio_file):
-                os.remove(temp_audio_file)
-            raise RuntimeError(f"Failed to capture audio from YouTube: {err_msg}")
+        err_tail = (res.stderr or "").strip().splitlines()[-1] if (res.stderr or "").strip() else "unknown error"
+        print(f"[Warning] Attempt {i + 1} ({a['label']} via {proxy_desc}) failed: {err_tail}")
+        attempt_log.append((a["label"], proxy_desc, err_tail))
+        _record_proxy_result(a["proxy"], success=False)
+
+    print_proxy_health_summary()
+
+    if not success:
+        if os.path.exists(temp_audio_file):
+            os.remove(temp_audio_file)
+        summary = "; ".join(f"[{label} / {proxy}] {err}" for label, proxy, err in attempt_log)
+        raise RuntimeError(f"Failed to capture audio from YouTube after {len(attempts)} attempts: {summary}")
 
     if not os.path.exists(temp_audio_file) or os.path.getsize(temp_audio_file) < 1000:
         if os.path.exists(temp_audio_file):
@@ -1121,13 +1192,18 @@ def process_clip(video_url: str, clip: ViralClip, index: int, job_dir: str,
             print(f"Downloading section (Attempt {attempt + 1}/{slice_max_attempts})...")
             subprocess.run(slice_cmd, check=True, timeout=SLICE_TIMEOUT_SEC)
             download_success = True
+            _record_proxy_result(proxy_choice, success=True)
             break
         except subprocess.TimeoutExpired:
             print(f"[Warning] Clip download timed out after {SLICE_TIMEOUT_SEC}s. Retrying with a different proxy...")
+            _record_proxy_result(proxy_choice, success=False)
             time.sleep(4)
         except subprocess.CalledProcessError:
             print("CDN connection reset detected. Retrying with a different proxy in 4s...")
+            _record_proxy_result(proxy_choice, success=False)
             time.sleep(4)
+
+    print_proxy_health_summary()
 
     if not download_success:
         print(f"Skipping Clip {index} due to persistent CDN timeout.")

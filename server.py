@@ -410,3 +410,11 @@ if os.path.isdir(static_dir):
 @app.get("/health")
 def health_check():
     return {"status": "ok"}
+
+
+@app.get("/proxy-health")
+def proxy_health():
+    """Per-process success/fail counts per proxy (host:port only, never
+    credentials), reset on every restart. Quick way to spot a dead/flagged
+    proxy without grepping Render logs."""
+    return core.get_proxy_health_summary()
