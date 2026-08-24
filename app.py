@@ -303,7 +303,10 @@ def _build_ytdlp_audio_cmd(youtube_url: str, temp_audio_file: str, player_client
         "-x",
         "--audio-format", "mp3",
         "-o", temp_audio_file,
-        "--user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+        "--socket-timeout", "15",
+        "--retries", "3",
+        "--fragment-retries", "3",
+        "--user-agent", "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Mobile Safari/537.36",
         "--extractor-args", f"youtube:player_client={player_clients};player_skip=webpage,configs",
         "--no-check-certificates",
         "--no-warnings",
@@ -324,10 +327,9 @@ def transcribe_fast_groq(youtube_url: str, job_dir: str) -> str:
     print("Downloading audio segment for Groq Whisper transcription...")
     temp_audio_file = os.path.join(job_dir, "temp_whisper.mp3")
 
-    DOWNLOAD_TIMEOUT_SEC = 180  # audio-only download; if a proxy is dead/slow, fail fast instead of hanging the job
-    COOKIE_CLIENTS = "web,mweb"       # honor --cookies
-    NO_COOKIE_CLIENTS = "ios,android,mweb"  # native app clients; ignore --cookies
-
+    DOWNLOAD_TIMEOUT_SEC = 90
+    COOKIE_CLIENTS = "android_creator,android,ios"
+    NO_COOKIE_CLIENTS = "android_creator,android,ios"
     proxy_sequence = _proxy_pool_shuffled() if _PROXY_LIST else []
 
     # Attempt plan, in order. We deliberately interleave "no proxy at all"
