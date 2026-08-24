@@ -120,7 +120,13 @@ _AUTO = object()
 
 _BROWSER_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
 
-def yt_client_args(proxy=_AUTO) -> list:
+# IMPORTANT: cookies and player_client must never be mixed carelessly.
+# - android/ios clients authenticate like the native apps, not a browser.
+#   Sending browser cookies + a desktop UA on top of them looks like a
+#   forged/mismatched session to YouTube and is what was triggering the
+#   "Sign in to confirm you're not a bot" wall on every clip.
+# - web/mweb clients are the only ones cookies are actually meaningful for.
+def yt_client_args(proxy=_AUTO, use_cookies: bool = False) -> list:
     if proxy is _AUTO:
         proxy_part = _proxy_args()
     elif proxy:
@@ -129,15 +135,25 @@ def yt_client_args(proxy=_AUTO) -> list:
     else:
         proxy_part = []
 
+    if use_cookies and COOKIE_FILE:
+        # Web session: cookies are valid here, don't force android/ios/tv.
+        client_part = [
+            "--extractor-args", "youtube:player_client=web,mweb",
+            "--user-agent", _BROWSER_UA,
+        ] + YT_EXTRA_ARGS
+    else:
+        # Unauthenticated app-client path: no cookies, no browser UA spoof.
+        client_part = [
+            "--extractor-args", "youtube:player_client=android,ios",
+        ]
+
     return [
-        "--user-agent", _BROWSER_UA,
-        "--extractor-args", "youtube:player_client=android,ios,tv",
         "--rm-cache-dir",
         "--no-check-certificates",
         "--no-warnings",
         "--prefer-free-formats",
         "--geo-bypass",
-    ] + YT_EXTRA_ARGS + proxy_part
+    ] + client_part + proxy_part
 
 MODELS_DIR = "models"
 JOBS_ROOT = "jobs"
@@ -293,13 +309,13 @@ def _build_ytdlp_audio_cmd(youtube_url: str, temp_audio_file: str, player_client
         "--geo-bypass",
     ]
     if use_cookies and COOKIE_FILE:
-        cmd += ["--cookies", COOKIE_FILE][cite: 2]
+        cmd += ["--cookies", COOKIE_FILE]
     if proxy:
         _log_proxy(proxy)
-        cmd += ["--proxy", proxy][cite: 2]
+        cmd += ["--proxy", proxy]
     else:
-        print("[yt-dlp] No proxy (direct)")[cite: 2]
-    cmd.append(youtube_url)[cite: 2]
+        print("[yt-dlp] No proxy (direct)")
+    cmd.append(youtube_url)
     return cmd
 
 def transcribe_fast_groq(youtube_url: str, job_dir: str) -> str:
@@ -312,11 +328,13 @@ def transcribe_fast_groq(youtube_url: str, job_dir: str) -> str:
     attempts = []
     if COOKIE_FILE:
         attempts.append({"client": "web", "use_cookies": True, "proxy": None, "label": "direct, cookies (web)"})
-    attempts.append({"client": "tv", "use_cookies": False, "proxy": None, "label": "direct, no cookies (tv)"})
+    attempts.append({"client": "android,ios", "use_cookies": False, "proxy": None, "label": "direct, no cookies (android/ios)"})
     attempts.append({"client": "web", "use_cookies": False, "proxy": None, "label": "direct, no cookies (web)"})
 
     for p in proxy_sequence[:2]:
-        attempts.append({"client": "web,tv", "use_cookies": bool(COOKIE_FILE), "proxy": p, "label": "proxy (web/tv)"})
+        attempts.append({"client": "android,ios", "use_cookies": False, "proxy": p, "label": "proxy, no cookies (android/ios)"})
+        if COOKIE_FILE:
+            attempts.append({"client": "web", "use_cookies": True, "proxy": p, "label": "proxy, cookies (web)"})
 
     attempt_log = []
     success = False
@@ -1135,11 +1153,19 @@ def process_clip(video_url: str, clip: ViralClip, index: int, job_dir: str,
 
     SLICE_TIMEOUT_SEC = 240
     slice_proxy_sequence = _proxy_pool_shuffled() if _PROXY_LIST else [None]
-    slice_max_attempts = min(3, len(slice_proxy_sequence))
+
+    # Each attempt is (proxy, use_cookies). Try the unauthenticated
+    # android/ios path first (cheap, works for most public video), then
+    # fall back to web+cookies for gated content. Never mix the two.
+    attempt_plan = []
+    for proxy_choice in (slice_proxy_sequence[:2] or [None]):
+        attempt_plan.append((proxy_choice, False))
+        if COOKIE_FILE:
+            attempt_plan.append((proxy_choice, True))
+    attempt_plan = attempt_plan[:4]
 
     download_success = False
-    for attempt in range(slice_max_attempts):
-        proxy_choice = slice_proxy_sequence[attempt]
+    for attempt, (proxy_choice, use_cookies) in enumerate(attempt_plan):
         slice_cmd = [
             "yt-dlp",
             "-f", "bestvideo[height<=720]+bestaudio/best[height<=720]/best",
@@ -1149,11 +1175,11 @@ def process_clip(video_url: str, clip: ViralClip, index: int, job_dir: str,
             "--retries", "10",
             "--fragment-retries", "10",
             "--socket-timeout", "25",
-            "--extractor-args", "youtube:player_client=android,ios,tv"
-        ] + yt_client_args(proxy=proxy_choice) + [video_url, "-o", temp_raw]
+        ] + yt_client_args(proxy=proxy_choice, use_cookies=use_cookies) + [video_url, "-o", temp_raw]
 
         try:
-            print(f"Downloading section (Attempt {attempt + 1}/{slice_max_attempts})...")
+            mode_label = "web+cookies" if use_cookies else "android/ios (no cookies)"
+            print(f"Downloading section (Attempt {attempt + 1}/{len(attempt_plan)}, {mode_label})...")
             subprocess.run(slice_cmd, check=True, timeout=SLICE_TIMEOUT_SEC)
             if os.path.exists(temp_raw) and os.path.getsize(temp_raw) > 50000:
                 download_success = True
