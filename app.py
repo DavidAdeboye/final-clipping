@@ -489,6 +489,58 @@ def render_gimbal_tracked_video(
             os.remove(temp_processed_video)
 
 
+def resolve_direct_video_stream(video_url: str) -> Optional[str]:
+    # 1. Query Cobalt v10 API endpoints
+    cobalt_instances = [
+        "https://api.cobalt.tools/",
+        "https://cobalt-api.kwiatekmiki.pl/",
+        "https://co.eepy.today/",
+    ]
+
+    cobalt_payload = json.dumps({
+        "url": video_url,
+        "videoQuality": "720",
+        "youtubeVideoCodec": "h264",
+        "downloadMode": "auto"
+    }).encode("utf-8")
+
+    for c_url in cobalt_instances:
+        try:
+            req = urllib.request.Request(
+                c_url,
+                data=cobalt_payload,
+                headers={
+                    "Accept": "application/json",
+                    "Content-Type": "application/json",
+                    "User-Agent": _BROWSER_UA
+                }
+            )
+            with urllib.request.urlopen(req, timeout=12) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+                stream_url = data.get("url")
+                if stream_url:
+                    print(f"Direct stream URL acquired via {c_url}")
+                    return stream_url
+        except Exception:
+            continue
+
+    # 2. Fallback: Query Invidious stream endpoints
+    try:
+        video_id = get_video_id(video_url)
+        invidious_api = f"https://api.invidious.io/api/v1/videos/{video_id}"
+        req = urllib.request.Request(invidious_api, headers={"User-Agent": _BROWSER_UA})
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+            formats = data.get("formatStreams", [])
+            for f in formats:
+                if f.get("resolution") in ("720p", "480p", "360p"):
+                    return f.get("url")
+    except Exception:
+        pass
+
+    return None
+
+
 def process_clip(
     video_url: str,
     clip: ViralClip,
@@ -506,46 +558,26 @@ def process_clip(
     print(f"\nProcessing Clip {index}: {clip.title}")
     print(f"Time: {clip.start_seconds}s to {clip.end_seconds}s")
 
-    cobalt_payload = json.dumps({
-        "url": video_url,
-        "videoQuality": "720",
-        "youtubeVideoCodec": "h264"
-    }).encode("utf-8")
-
-    req = urllib.request.Request(
-        "https://api.cobalt.tools/api/json",
-        data=cobalt_payload,
-        headers={
-            "Accept": "application/json",
-            "Content-Type": "application/json",
-            "User-Agent": _BROWSER_UA
-        }
-    )
-
-    stream_url = None
-    try:
-        with urllib.request.urlopen(req, timeout=20) as resp:
-            result = json.loads(resp.read().decode())
-            stream_url = result.get("url")
-    except Exception as e:
-        print(f"Cobalt resolve fallback, falling back to yt-dlp slice: {e}")
+    stream_url = resolve_direct_video_stream(video_url)
+    duration = clip.end_seconds - clip.start_seconds
 
     if stream_url:
-        duration = clip.end_seconds - clip.start_seconds
         ffmpeg_dl = [
             "ffmpeg", "-y",
             "-ss", str(clip.start_seconds),
             "-i", stream_url,
             "-t", str(duration),
-            "-c:v", "libx264", "-preset", "veryfast",
+            "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
             "-c:a", "aac",
             temp_raw
         ]
         subprocess.run(ffmpeg_dl, check=True)
     else:
+        # Fallback slice via yt-dlp with mobile client spoofing
         slice_cmd = [
             "yt-dlp",
             "-f", "best[height<=720]/best",
+            "--extractor-args", "youtube:player_client=android,ios",
             "--download-sections", f"*{clip.start_seconds}-{clip.end_seconds}",
             "--merge-output-format", "mp4",
             "--force-keyframes-at-cuts",
