@@ -55,17 +55,14 @@ else:
           "and are more likely to hit 429/bot-check errors.")
     YT_EXTRA_ARGS = []
 
-# Client choice matters here: "ios"/"android" are YouTube's native app API
-# clients and authenticate via device tokens, NOT browser cookies — pairing them
-# with --cookies means the cookies are silently ignored on those attempts.
-# "web"/"mweb" are the clients that actually honor browser-exported cookies.
-# iOS and Android clients bypass the desktop web bot check entirely
-_PLAYER_CLIENTS = "android,ios"
-# Rotating proxy pool. Set YTDLP_PROXIES on the server (Render env var, never
-# committed to git) to a comma-separated list of full proxy URLs, e.g.:
-#   http://user:pass@ip1:port1,http://user:pass@ip2:port2,...
-# A different proxy is chosen at random for every yt-dlp invocation so a
-# single flagged IP doesn't take down every request.
+# android_creator, android, and ios clients bypass the web player response errors on datacenter IPs
+_PLAYER_CLIENTS = "android_creator,android,ios"
+
+_DEFAULT_UA = (
+    "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/122.0.0.0 Mobile Safari/537.36"
+)
+
 _PROXY_LIST = [p.strip() for p in os.environ.get("YTDLP_PROXIES", "").split(",") if p.strip()]
 if _PROXY_LIST:
     print(f"[Startup] Loaded {len(_PROXY_LIST)} proxy option(s) for yt-dlp.")
@@ -74,15 +71,10 @@ else:
 
 
 def _log_proxy(chosen: str) -> None:
-    # Log host:port only — never the credentials — so hangs/timeouts can be
-    # traced back to a specific proxy without leaking secrets into logs.
     _, _, host_port = chosen.rpartition("@")
     print(f"[yt-dlp] Using proxy: {host_port or '(unparseable)'}")
 
 
-# In-memory proxy health tracking, keyed by host:port (never credentials).
-# Reset on every process restart — this is a running-process eyeball tool,
-# not a persisted metric store.
 PROXY_STATS: Dict[str, Dict[str, int]] = {}
 _proxy_stats_lock = threading.Lock()
 
@@ -127,20 +119,15 @@ def _proxy_args() -> list:
 
 
 def _proxy_pool_shuffled() -> list:
-    """A shuffled copy of the proxy pool, for retry loops that should try
-    DISTINCT proxies rather than risk randomly repeating the same one."""
     pool = list(_PROXY_LIST)
     random.shuffle(pool)
     return pool
 
 
-_AUTO = object()  # sentinel: pick a random proxy (default, used by most call sites)
+_AUTO = object()
 
 
 def yt_client_args(proxy=_AUTO) -> list:
-    """Fresh args per call. By default picks a random proxy; pass an explicit
-    proxy URL (or None for no proxy) when a caller needs to control which
-    proxy is used, e.g. cycling through distinct ones across retries."""
     if proxy is _AUTO:
         proxy_part = _proxy_args()
     elif proxy:
@@ -150,13 +137,14 @@ def yt_client_args(proxy=_AUTO) -> list:
         proxy_part = []
 
     return [
-        "--user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+        "--user-agent", _DEFAULT_UA,
         "--extractor-args", f"youtube:player_client={_PLAYER_CLIENTS};player_skip=webpage,configs",
         "--no-check-certificates",
         "--no-warnings",
         "--prefer-free-formats",
         "--geo-bypass",
     ] + YT_EXTRA_ARGS + proxy_part
+
 
 MODELS_DIR = "models"
 JOBS_ROOT = "jobs"
@@ -167,8 +155,6 @@ TEMP_FILE_PREFIXES = ("temp_subs", "temp_whisper", "temp_raw_", "temp_paced_", "
 
 
 def _write_job_metadata(job_dir: str, job_id: str, premium: bool = False):
-    """Merge-writes job metadata so fields set by other writers (e.g. server.py's
-    client_id, or status/error tracked across restarts) are never clobbered."""
     meta_path = os.path.join(job_dir, JOB_METADATA_FILENAME)
     meta = {}
     if os.path.exists(meta_path):
@@ -303,10 +289,10 @@ def _build_ytdlp_audio_cmd(youtube_url: str, temp_audio_file: str, player_client
         "-x",
         "--audio-format", "mp3",
         "-o", temp_audio_file,
-        "--socket-timeout", "15",
+        "--socket-timeout", "20",
         "--retries", "3",
         "--fragment-retries", "3",
-        "--user-agent", "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Mobile Safari/537.36",
+        "--user-agent", _DEFAULT_UA,
         "--extractor-args", f"youtube:player_client={player_clients};player_skip=webpage,configs",
         "--no-check-certificates",
         "--no-warnings",
@@ -323,6 +309,7 @@ def _build_ytdlp_audio_cmd(youtube_url: str, temp_audio_file: str, player_client
     cmd.append(youtube_url)
     return cmd
 
+
 def transcribe_fast_groq(youtube_url: str, job_dir: str) -> str:
     print("Downloading audio segment for Groq Whisper transcription...")
     temp_audio_file = os.path.join(job_dir, "temp_whisper.mp3")
@@ -330,19 +317,15 @@ def transcribe_fast_groq(youtube_url: str, job_dir: str) -> str:
     DOWNLOAD_TIMEOUT_SEC = 90
     COOKIE_CLIENTS = "android_creator,android,ios"
     NO_COOKIE_CLIENTS = "android_creator,android,ios"
+
     proxy_sequence = _proxy_pool_shuffled() if _PROXY_LIST else []
 
-    # Attempt plan, in order. We deliberately interleave "no proxy at all"
-    # attempts with proxied ones, and "with cookies" with "without cookies",
-    # so a failure tells us WHICH variable mattered instead of just "it
-    # failed again". Direct (no-proxy) attempts go first since they're the
-    # cheapest way to find out whether the proxy pool itself is flagged.
     attempts = []
     if COOKIE_FILE:
         attempts.append({"client": COOKIE_CLIENTS, "use_cookies": True, "proxy": None,
-                          "label": "direct, cookies (web/mweb)"})
+                          "label": "direct, cookies (android_creator/android/ios)"})
     attempts.append({"client": NO_COOKIE_CLIENTS, "use_cookies": False, "proxy": None,
-                      "label": "direct, no cookies (ios/android/mweb)"})
+                      "label": "direct, no cookies (android_creator/android/ios)"})
     for p in proxy_sequence[:3]:
         attempts.append({"client": COOKIE_CLIENTS if COOKIE_FILE else NO_COOKIE_CLIENTS,
                           "use_cookies": bool(COOKIE_FILE), "proxy": p,
@@ -351,7 +334,7 @@ def transcribe_fast_groq(youtube_url: str, job_dir: str) -> str:
         attempts.append({"client": NO_COOKIE_CLIENTS, "use_cookies": False, "proxy": p,
                           "label": "proxy, no cookies"})
 
-    attempt_log = []  # (label, proxy host:port or 'direct', short error) for the final error message
+    attempt_log = []
     success = False
 
     for i, a in enumerate(attempts):
@@ -416,6 +399,7 @@ def transcribe_fast_groq(youtube_url: str, job_dir: str) -> str:
     finally:
         if os.path.exists(temp_audio_file):
             os.remove(temp_audio_file)
+
 
 def fetch_transcript_text(youtube_url: str, video_id: str, job_dir: str) -> str:
     print(f"Checking captions for video: {video_id}...")
@@ -1167,9 +1151,7 @@ def process_clip(video_url: str, clip: ViralClip, index: int, job_dir: str,
     print(f"Hook: {clip.hook}")
     print(f"Reasoning: {clip.reasoning}")
 
-    # Use 720p slice max to preserve RAM limits on Render
     SLICE_TIMEOUT_SEC = 240
-
     slice_proxy_sequence = _proxy_pool_shuffled() if _PROXY_LIST else [None]
     slice_max_attempts = min(3, len(slice_proxy_sequence))
 
@@ -1183,7 +1165,8 @@ def process_clip(video_url: str, clip: ViralClip, index: int, job_dir: str,
             "--merge-output-format", "mp4",
             "--force-keyframes-at-cuts",
             "--retries", "10",
-            "--fragment-retries", "10"
+            "--fragment-retries", "10",
+            "--socket-timeout", "20"
         ] + yt_client_args(proxy=proxy_choice) + [video_url, "-o", temp_raw]
 
         try:
