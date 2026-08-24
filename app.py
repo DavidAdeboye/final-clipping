@@ -987,7 +987,7 @@ def process_clip(video_url: str, clip: ViralClip, index: int, job_dir: str,
     print(f"Reasoning: {clip.reasoning}")
 
     # Use 720p slice max to preserve RAM limits on Render
-slice_cmd = [
+    slice_cmd = [
         "yt-dlp",
         "-f", "best[height<=720]/bestvideo[height<=720]+bestaudio/best",
         "--download-sections", f"*{clip.start_seconds}-{clip.end_seconds}",
