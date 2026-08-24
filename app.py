@@ -56,7 +56,8 @@ else:
     YT_EXTRA_ARGS = []
 
 # The TV client is highly resilient on datacenter IPs like Render
-_PLAYER_CLIENTS = "tv"
+# iOS and Android native APIs first, falling back to web (which uses Deno JS from the Docker container)
+_PLAYER_CLIENTS = "ios,android,web"
 
 _PROXY_LIST = [p.strip() for p in os.environ.get("YTDLP_PROXIES", "").split(",") if p.strip()]
 if _PROXY_LIST:
@@ -310,8 +311,8 @@ def transcribe_fast_groq(youtube_url: str, job_dir: str) -> str:
     temp_audio_file = os.path.join(job_dir, "temp_whisper.mp3")
 
     DOWNLOAD_TIMEOUT_SEC = 90
-    COOKIE_CLIENTS = "tv"
-    NO_COOKIE_CLIENTS = "tv"
+    COOKIE_CLIENTS = "ios,android,web"
+    NO_COOKIE_CLIENTS = "ios,android,web"
 
     proxy_sequence = _proxy_pool_shuffled() if _PROXY_LIST else []
 
