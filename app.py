@@ -131,8 +131,7 @@ def yt_client_args(proxy=_AUTO) -> list:
 
     return [
         "--user-agent", _BROWSER_UA,
-        "--downloader-args", f"ffmpeg_i:-user_agent '{_BROWSER_UA}'",
-        "--extractor-args", "youtube:player_client=web,tv",
+        "--extractor-args", "youtube:player_client=android,ios,tv",
         "--rm-cache-dir",
         "--no-check-certificates",
         "--no-warnings",
@@ -1147,30 +1146,32 @@ def process_clip(video_url: str, clip: ViralClip, index: int, job_dir: str,
             "--download-sections", f"*{clip.start_seconds}-{clip.end_seconds}",
             "--merge-output-format", "mp4",
             "--force-keyframes-at-cuts",
-            "--retries", "5",
-            "--fragment-retries", "5",
-            "--socket-timeout", "25"
+            "--retries", "10",
+            "--fragment-retries", "10",
+            "--socket-timeout", "25",
+            "--extractor-args", "youtube:player_client=android,ios,tv"
         ] + yt_client_args(proxy=proxy_choice) + [video_url, "-o", temp_raw]
 
         try:
             print(f"Downloading section (Attempt {attempt + 1}/{slice_max_attempts})...")
             subprocess.run(slice_cmd, check=True, timeout=SLICE_TIMEOUT_SEC)
-            download_success = True
-            _record_proxy_result(proxy_choice, success=True)
-            break
+            if os.path.exists(temp_raw) and os.path.getsize(temp_raw) > 50000:
+                download_success = True
+                _record_proxy_result(proxy_choice, success=True)
+                break
         except subprocess.TimeoutExpired:
-            print(f"[Warning] Clip download timed out after {SLICE_TIMEOUT_SEC}s. Retrying with a different proxy...")
+            print(f"[Warning] Clip download timed out after {SLICE_TIMEOUT_SEC}s.")
             _record_proxy_result(proxy_choice, success=False)
             time.sleep(4)
-        except subprocess.CalledProcessError:
-            print("CDN connection reset detected. Retrying with a different proxy in 4s...")
+        except subprocess.CalledProcessError as e:
+            print(f"[Warning] Download attempt failed: {e}. Retrying...")
             _record_proxy_result(proxy_choice, success=False)
             time.sleep(4)
 
     print_proxy_health_summary()
 
     if not download_success:
-        print(f"Skipping Clip {index} due to persistent CDN timeout.")
+        print(f"Skipping Clip {index} due to persistent CDN download error.")
         if os.path.exists(temp_raw):
             os.remove(temp_raw)
         return
