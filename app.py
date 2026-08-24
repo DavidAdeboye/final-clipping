@@ -236,23 +236,23 @@ def extract_captions(video_url: str, job_dir: str) -> str:
     print(f"Successfully retrieved {len(full_transcript)} characters of transcript.")
     return full_transcript
 
-def find_viral_moments(transcript_text: str) -> HighlightResponse:
-    print("Analyzing highlights with Gemini using viral short form criteria...")
+def find_viral_moments_direct(video_url: str) -> HighlightResponse:
+    print("Analyzing YouTube video directly with Gemini for transcript & highlights...")
     client = genai.Client(api_key=os.environ.get("GEMINI_API_KEY"))
 
     prompt = f"""
-    You are an expert short form video editor who cuts clips that go viral.
-    Select the TOP 3 moments with the highest potential to perform well as standalone clips.
+    You are an expert short form video editor.
+    Watch and analyze this YouTube video: {video_url}
 
-    Guidelines:
-    Clip duration MUST be between 30 and 65 seconds.
-    Start timestamp must be right before the hook setup begins.
-    End timestamp must land right after the punchline, reaction, or reveal.
-    Provide a virality score (1 to 100).
-    Provide concise reasoning.
+    Extract the transcript internally, identify the most engaging parts, and select the TOP 3 moments with the highest potential to perform well as standalone vertical clips (Shorts/TikTok/Reels).
 
-    Transcript:
-    {transcript_text[:12000]}
+    Strict Rules:
+    1. Clip duration MUST be between 30 and 65 seconds.
+    2. Start timestamp (start_seconds) must begin right before the hook or question is asked.
+    3. End timestamp (end_seconds) must end right after the punchline, reaction, or takeaway.
+    4. Ensure timestamps match the actual timeline of the video precisely.
+    5. Provide a virality score (1 to 100).
+    6. Provide concise reasoning.
     """
 
     priority_models = [
@@ -274,11 +274,10 @@ def find_viral_moments(transcript_text: str) -> HighlightResponse:
             )
             return HighlightResponse.model_validate_json(response.text)
         except Exception as e:
-            print(f"Model {model_name} unavailable ({e}). Retrying fallback...")
+            print(f"Model {model_name} error ({e}). Trying fallback...")
             continue
 
     raise RuntimeError("Failed to generate highlights with Gemini models.")
-
 
 def remove_silence(
     input_path: str,
@@ -594,8 +593,8 @@ def run_pipeline(
     if duration > MAX_ALLOWED_SECONDS:
         raise ValueError(f"Video exceeds the {MAX_ALLOWED_HOURS} hour limit.")
 
-    transcript = extract_captions(video_url, job_dir)
-    highlight_data = find_viral_moments(transcript)
+    # Single multimodal API call: Gemini fetches video transcript & extracts viral segments
+    highlight_data = find_viral_moments_direct(video_url)
 
     for idx, clip in enumerate(highlight_data.clips, start=1):
         process_clip(video_url, clip, idx, job_dir, mode=mode, aspect_ratio=aspect_ratio)
