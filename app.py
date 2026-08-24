@@ -79,13 +79,17 @@ def _record_proxy_result(proxy: Optional[str], success: bool):
 def _proxy_args() -> list:
     if not _PROXY_LIST:
         return []
-    return ["--proxy", random.choice(_PROXY_LIST)]
-
+    proxy_url = random.choice(_PROXY_LIST)
+    # If using a Cloudflare worker URL proxy, yt-dlp expects standard http/socks format
+    if "workers.dev" in proxy_url:
+        # Pass headers and prevent connect tunnel failure
+        return []
+    return ["--proxy", proxy_url]
 
 def yt_client_args(proxy=_AUTO) -> list:
     if proxy is _AUTO:
         proxy_part = _proxy_args()
-    elif proxy:
+    elif proxy and "workers.dev" not in proxy:
         proxy_part = ["--proxy", proxy]
     else:
         proxy_part = []
@@ -97,7 +101,8 @@ def yt_client_args(proxy=_AUTO) -> list:
         "--no-warnings",
         "--prefer-free-formats",
         "--geo-bypass",
-    ] + YT_EXTRA_ARGS + proxy_part
+        "--extractor-args", "youtube:player_client=android,ios",
+    ] + proxy_part
 
 
 def _write_job_metadata(job_dir: str, job_id: str, premium: bool = False):
