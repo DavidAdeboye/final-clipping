@@ -16,10 +16,37 @@ import app as core
 
 app = FastAPI(title="Viral Clipper")
 
+
+def _job_meta_path(job_id: str) -> str:
+    return os.path.join(core.JOBS_ROOT, job_id, core.JOB_METADATA_FILENAME)
+
+
+def _persist_job_state(job_id: str, **fields):
+    """Merge-writes status/error/etc into job_meta.json so job state survives
+    a process restart (crash, OOM kill, redeploy). Never clobbers fields
+    (like client_id, created_at) written by other code paths."""
+    job_dir = os.path.join(core.JOBS_ROOT, job_id)
+    os.makedirs(job_dir, exist_ok=True)
+    meta_path = _job_meta_path(job_id)
+    meta = {}
+    if os.path.exists(meta_path):
+        try:
+            with open(meta_path, "r") as f:
+                meta = json.load(f)
+        except Exception:
+            meta = {}
+    meta.update(fields)
+    try:
+        with open(meta_path, "w") as f:
+            json.dump(meta, f)
+    except Exception:
+        traceback.print_exc()
+
+
 class Job:
-    def __init__(self, job_id: str):
+    def __init__(self, job_id: str, status: str = "queued"):
         self.id = job_id
-        self.status = "queued"          # queued | running | awaiting_input | done | error
+        self.status = status            # queued | running | awaiting_input | done | error
         self.error: Optional[str] = None
         self.result_dir: Optional[str] = None
         self.clips: list = []
@@ -29,7 +56,63 @@ class Job:
         self._answer: Optional[str] = None
         self.thread: Optional[threading.Thread] = None
 
+    def set_status(self, status: str, error: Optional[str] = None):
+        self.status = status
+        if error is not None:
+            self.error = error
+        _persist_job_state(self.id, status=status, error=self.error)
+
+
 JOBS: Dict[str, Job] = {}
+
+
+def _rehydrate_jobs_from_disk():
+    """On startup, reconstruct JOBS from job_meta.json files left behind by a
+    prior process. In-flight jobs (queued/running/awaiting_input) can't
+    actually be resumed - the worker thread and its state are gone - so we
+    mark them as errored rather than leaving clients to poll a ghost job
+    that 404s or hangs forever. Already-finished jobs are restored as 'done'
+    so their clips remain visible."""
+    if not os.path.isdir(core.JOBS_ROOT):
+        return
+
+    for job_id in os.listdir(core.JOBS_ROOT):
+        job_dir = os.path.join(core.JOBS_ROOT, job_id)
+        if not os.path.isdir(job_dir):
+            continue
+
+        meta_path = os.path.join(job_dir, core.JOB_METADATA_FILENAME)
+        meta = {}
+        if os.path.exists(meta_path):
+            try:
+                with open(meta_path, "r") as f:
+                    meta = json.load(f)
+            except Exception:
+                pass
+
+        clips = sorted(
+            f for f in os.listdir(job_dir) if f.startswith("clip_") and f.endswith(".mp4")
+        )
+        prior_status = meta.get("status")
+
+        job = Job(job_id)
+        if clips:
+            job.status = "done"
+        elif prior_status in ("queued", "running", "awaiting_input"):
+            # Was mid-flight when the process died; nothing to resume.
+            job.status = "error"
+            job.error = "Server restarted while this job was in progress. Please start a new clip job."
+        elif prior_status == "error":
+            job.status = "error"
+            job.error = meta.get("error") or "Job failed."
+        else:
+            continue  # nothing usable to restore
+
+        JOBS[job_id] = job
+        _persist_job_state(job_id, status=job.status, error=job.error)
+
+
+_rehydrate_jobs_from_disk()
 
 class WebPrompt:
     def __init__(self, job: Job):
@@ -45,11 +128,11 @@ class WebPrompt:
 
         job.question = question.strip()
         job.frames = frame_files
-        job.status = "awaiting_input"
+        job.set_status("awaiting_input")
         job._answer_event.clear()
         job._answer_event.wait()
 
-        job.status = "running"
+        job.set_status("running")
         answer = job._answer or ""
         job._answer = None
         return answer
@@ -58,7 +141,7 @@ class WebPrompt:
         return self.ask(question)
 
 def _run_job(job: Job, youtube_url: str, aspect_ratio: str, mode: str):
-    job.status = "running"
+    job.set_status("running")
     try:
         job_dir = core.run_pipeline(
             youtube_url,
@@ -71,10 +154,9 @@ def _run_job(job: Job, youtube_url: str, aspect_ratio: str, mode: str):
         job.clips = sorted(
             f for f in os.listdir(job_dir) if f.startswith("clip_") and f.endswith(".mp4")
         )
-        job.status = "done"
+        job.set_status("done")
     except Exception as e:
-        job.status = "error"
-        job.error = str(e)
+        job.set_status("error", error=str(e))
         traceback.print_exc()
 
 class StartJobRequest(BaseModel):
@@ -99,17 +181,17 @@ def start_job(req: StartJobRequest):
     job_id = str(uuid.uuid4())
     job = Job(job_id)
     JOBS[job_id] = job
-    
-    # Save client_id to metadata immediately
-    job_dir = os.path.join(core.JOBS_ROOT, job_id)
-    os.makedirs(job_dir, exist_ok=True)
-    meta = {
-        "job_id": job_id,
-        "client_id": req.client_id,
-        "created_at": time.time()
-    }
-    with open(os.path.join(job_dir, core.JOB_METADATA_FILENAME), "w") as f:
-        json.dump(meta, f)
+
+    # Save client_id + initial status to metadata immediately, merge-safe so
+    # later writers (run_pipeline's _write_job_metadata, our own status
+    # updates) don't clobber client_id or vice versa.
+    _persist_job_state(
+        job_id,
+        client_id=req.client_id,
+        created_at=time.time(),
+        status=job.status,
+        error=None,
+    )
 
     job.thread = threading.Thread(
         target=_run_job, args=(job, req.youtube_url, req.aspect_ratio, req.mode), daemon=True
@@ -211,8 +293,25 @@ def list_jobs():
 def get_job(job_id: str):
     job = JOBS.get(job_id)
     if not job:
-        raise HTTPException(404, "job not found")
-    
+        # Not in this process's memory - either it never existed, or the
+        # server restarted mid-job. Check disk before giving up so clients
+        # polling an in-flight job don't get a bare 404 into a black hole.
+        job_dir = os.path.join(core.JOBS_ROOT, job_id)
+        if not os.path.isdir(job_dir):
+            raise HTTPException(404, "job not found")
+
+        clips = sorted(
+            f for f in os.listdir(job_dir) if f.startswith("clip_") and f.endswith(".mp4")
+        )
+        job = Job(job_id)
+        if clips:
+            job.status = "done"
+        else:
+            job.status = "error"
+            job.error = "Server restarted while this job was in progress. Please start a new clip job."
+        JOBS[job_id] = job
+        _persist_job_state(job_id, status=job.status, error=job.error)
+
     job_dir = os.path.join(core.JOBS_ROOT, job.id)
     live_clips = []
     if os.path.isdir(job_dir):

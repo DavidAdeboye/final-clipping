@@ -127,12 +127,22 @@ TEMP_FILE_PREFIXES = ("temp_subs", "temp_whisper", "temp_raw_", "temp_paced_", "
 
 
 def _write_job_metadata(job_dir: str, job_id: str, premium: bool = False):
-    meta = {
-        "job_id": job_id,
-        "created_at": time.time(),
-        "premium": premium,
-    }
-    with open(os.path.join(job_dir, JOB_METADATA_FILENAME), "w") as f:
+    """Merge-writes job metadata so fields set by other writers (e.g. server.py's
+    client_id, or status/error tracked across restarts) are never clobbered."""
+    meta_path = os.path.join(job_dir, JOB_METADATA_FILENAME)
+    meta = {}
+    if os.path.exists(meta_path):
+        try:
+            with open(meta_path, "r") as f:
+                meta = json.load(f)
+        except Exception:
+            meta = {}
+
+    meta.setdefault("job_id", job_id)
+    meta.setdefault("created_at", time.time())
+    meta["premium"] = premium
+
+    with open(meta_path, "w") as f:
         json.dump(meta, f)
 
 
