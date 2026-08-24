@@ -277,14 +277,14 @@ def _build_ytdlp_audio_cmd(youtube_url: str, temp_audio_file: str, player_client
                             use_cookies: bool, proxy: Optional[str]) -> list:
     cmd = [
         "yt-dlp",
-        "-f", "bestaudio[ext=m4a]/ba/b",
+        "-f", "ba[ext=m4a]/ba/b",
         "-x",
         "--audio-format", "mp3",
         "-o", temp_audio_file,
         "--retries", "3",
         "--fragment-retries", "3",
         "--socket-timeout", "15",
-        "--extractor-args", f"youtube:player_client={player_clients}",
+        "--extractor-args", "youtube:player_client=mweb,android;player_skip=webpage,configs",
         "--rm-cache-dir",
         "--no-check-certificates",
         "--no-warnings",
@@ -296,32 +296,24 @@ def _build_ytdlp_audio_cmd(youtube_url: str, temp_audio_file: str, player_client
     if proxy:
         _log_proxy(proxy)
         cmd += ["--proxy", proxy]
-    else:
-        print("[yt-dlp] No proxy (direct)")
     cmd.append(youtube_url)
     return cmd
+
 
 def transcribe_fast_groq(youtube_url: str, job_dir: str) -> str:
     print("Downloading audio segment for Groq Whisper transcription...")
     temp_audio_file = os.path.join(job_dir, "temp_whisper.mp3")
 
     DOWNLOAD_TIMEOUT_SEC = 90
-
     proxy_sequence = _proxy_pool_shuffled() if _PROXY_LIST else []
 
-    # Sequence priorities:
-    # 1. Android client (Bypasses BotGuard PO token requirement completely)
-    # 2. TV client (Unrestricted on datacenter IPs)
-    # 3. Web client with cookies
-    attempts = [
-        {"client": "android", "use_cookies": False, "proxy": None, "label": "direct, no cookies (android)"},
-        {"client": "tv", "use_cookies": False, "proxy": None, "label": "direct, no cookies (tv)"},
-    ]
+    attempts = []
     if COOKIE_FILE:
-        attempts.append({"client": "web", "use_cookies": True, "proxy": None, "label": "direct, cookies (web)"})
+        attempts.append({"client": "mweb", "use_cookies": True, "proxy": None, "label": "direct, cookies (mweb)"})
+    attempts.append({"client": "android", "use_cookies": False, "proxy": None, "label": "direct, no cookies (android)"})
 
-    for p in proxy_sequence[:3]:
-        attempts.append({"client": "android,tv", "use_cookies": False, "proxy": p, "label": "proxy, (android/tv)"})
+    for p in proxy_sequence[:2]:
+        attempts.append({"client": "mweb", "use_cookies": bool(COOKIE_FILE), "proxy": p, "label": "proxy (mweb)"})
 
     attempt_log = []
     success = False
@@ -334,7 +326,6 @@ def transcribe_fast_groq(youtube_url: str, job_dir: str) -> str:
         try:
             res = subprocess.run(cmd, capture_output=True, text=True, timeout=DOWNLOAD_TIMEOUT_SEC)
         except subprocess.TimeoutExpired:
-            print(f"[Warning] Attempt {i + 1} ({a['label']} via {proxy_desc}) timed out after {DOWNLOAD_TIMEOUT_SEC}s.")
             attempt_log.append((a["label"], proxy_desc, f"timed out after {DOWNLOAD_TIMEOUT_SEC}s"))
             _record_proxy_result(a["proxy"], success=False)
             continue
@@ -346,47 +337,46 @@ def transcribe_fast_groq(youtube_url: str, job_dir: str) -> str:
             break
 
         err_tail = (res.stderr or "").strip().splitlines()[-1] if (res.stderr or "").strip() else "unknown error"
-        print(f"[Warning] Attempt {i + 1} ({a['label']} via {proxy_desc}) failed: {err_tail}")
         attempt_log.append((a["label"], proxy_desc, err_tail))
         _record_proxy_result(a["proxy"], success=False)
 
     print_proxy_health_summary()
 
-    # Multi endpoint fallback via public Invidious instances if direct download fails
+    # Public Cobalt API fallback
     if not success:
-        print("[transcribe_fast_groq] Direct yt-dlp attempts failed. Trying multi-mirror audio stream fallback...")
-        video_id = get_video_id(youtube_url)
-        invidious_instances = [
-            "https://inv.nadeko.net",
-            "https://invidious.nerdvpn.de",
-            "https://yt.drgnz.club"
+        print("[transcribe_fast_groq] Direct downloads failed. Using Cobalt API fallback...")
+        cobalt_endpoints = [
+            "https://api.cobalt.tools",
+            "https://cobalt-api.kwiatekm.com",
+            "https://co.wuk.sh"
         ]
-
-        for base_url in invidious_instances:
+        for endpoint in cobalt_endpoints:
             try:
-                api_url = f"{base_url}/api/v1/videos/{video_id}"
-                req = urllib.request.Request(api_url, headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"})
-                with urllib.request.urlopen(req, timeout=10) as resp:
+                payload = json.dumps({
+                    "url": youtube_url,
+                    "downloadMode": "audio",
+                    "audioFormat": "mp3"
+                }).encode("utf-8")
+                req = urllib.request.Request(
+                    f"{endpoint}/",
+                    data=payload,
+                    headers={
+                        "Accept": "application/json",
+                        "Content-Type": "application/json",
+                        "User-Agent": "Mozilla/5.0"
+                    }
+                )
+                with urllib.request.urlopen(req, timeout=15) as resp:
                     data = json.loads(resp.read().decode())
-                    audio_formats = [
-                        f for f in data.get("adaptiveFormats", [])
-                        if f.get("type", "").startswith("audio/")
-                    ]
-                    if audio_formats:
-                        audio_formats.sort(key=lambda x: int(x.get("bitrate", 0)), reverse=True)
-                        stream_url = audio_formats[0]["url"]
-                        ffmpeg_cmd = [
-                            "ffmpeg", "-y", "-i", stream_url,
-                            "-vn", "-ar", "16000", "-ac", "1", "-b:a", "64k",
-                            temp_audio_file
-                        ]
-                        subprocess.run(ffmpeg_cmd, check=True, timeout=60)
+                    download_url = data.get("url")
+                    if download_url:
+                        urllib.request.urlretrieve(download_url, temp_audio_file)
                         if os.path.exists(temp_audio_file) and os.path.getsize(temp_audio_file) > 1000:
                             success = True
-                            print(f"[transcribe_fast_groq] Fallback captured via {base_url}.")
+                            print(f"[transcribe_fast_groq] Audio captured via Cobalt ({endpoint}).")
                             break
-            except Exception as mirror_err:
-                print(f"[transcribe_fast_groq] Mirror {base_url} failed: {mirror_err}")
+            except Exception as e:
+                print(f"[transcribe_fast_groq] Cobalt endpoint {endpoint} failed: {e}")
                 continue
 
     if not success:
@@ -420,7 +410,6 @@ def transcribe_fast_groq(youtube_url: str, job_dir: str) -> str:
     finally:
         if os.path.exists(temp_audio_file):
             os.remove(temp_audio_file)
-
 
 def fetch_transcript_text(youtube_url: str, video_id: str, job_dir: str) -> str:
     print(f"Checking captions for video: {video_id}...")
