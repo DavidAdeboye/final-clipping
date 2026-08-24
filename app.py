@@ -277,14 +277,14 @@ def _build_ytdlp_audio_cmd(youtube_url: str, temp_audio_file: str, player_client
                             use_cookies: bool, proxy: Optional[str]) -> list:
     cmd = [
         "yt-dlp",
-        "-f", "ba/b",
+        "-f", "bestaudio[ext=m4a]/ba/b",
         "-x",
         "--audio-format", "mp3",
         "-o", temp_audio_file,
         "--retries", "3",
         "--fragment-retries", "3",
         "--socket-timeout", "15",
-        "--extractor-args", f"youtube:player_client={player_clients};rustypipe_bg_pot_cache=1",
+        "--extractor-args", f"youtube:player_client={player_clients}",
         "--rm-cache-dir",
         "--no-check-certificates",
         "--no-warnings",
@@ -301,7 +301,6 @@ def _build_ytdlp_audio_cmd(youtube_url: str, temp_audio_file: str, player_client
     cmd.append(youtube_url)
     return cmd
 
-
 def transcribe_fast_groq(youtube_url: str, job_dir: str) -> str:
     print("Downloading audio segment for Groq Whisper transcription...")
     temp_audio_file = os.path.join(job_dir, "temp_whisper.mp3")
@@ -310,23 +309,19 @@ def transcribe_fast_groq(youtube_url: str, job_dir: str) -> str:
 
     proxy_sequence = _proxy_pool_shuffled() if _PROXY_LIST else []
 
-    attempts = []
-    # 1. Primary: Web client with fresh cookies + PO Token generator
+    # Sequence priorities:
+    # 1. Android client (Bypasses BotGuard PO token requirement completely)
+    # 2. TV client (Unrestricted on datacenter IPs)
+    # 3. Web client with cookies
+    attempts = [
+        {"client": "android", "use_cookies": False, "proxy": None, "label": "direct, no cookies (android)"},
+        {"client": "tv", "use_cookies": False, "proxy": None, "label": "direct, no cookies (tv)"},
+    ]
     if COOKIE_FILE:
-        attempts.append({"client": "web", "use_cookies": True, "proxy": None,
-                          "label": "direct, cookies (web)"})
-    # 2. TV client: Highly unconstrained by bot checks on datacenter subnets
-    attempts.append({"client": "tv", "use_cookies": False, "proxy": None,
-                      "label": "direct, no cookies (tv)"})
-    # 3. Web client without cookies using PO Token
-    attempts.append({"client": "web", "use_cookies": False, "proxy": None,
-                      "label": "direct, no cookies (web+pot)"})
+        attempts.append({"client": "web", "use_cookies": True, "proxy": None, "label": "direct, cookies (web)"})
 
-    # Proxy fallbacks if proxies are provided
     for p in proxy_sequence[:3]:
-        attempts.append({"client": "web,tv",
-                          "use_cookies": bool(COOKIE_FILE), "proxy": p,
-                          "label": f"proxy, {'cookies' if COOKIE_FILE else 'no cookies'}"})
+        attempts.append({"client": "android,tv", "use_cookies": False, "proxy": p, "label": "proxy, (android/tv)"})
 
     attempt_log = []
     success = False
@@ -344,7 +339,7 @@ def transcribe_fast_groq(youtube_url: str, job_dir: str) -> str:
             _record_proxy_result(a["proxy"], success=False)
             continue
 
-        if res.returncode == 0:
+        if res.returncode == 0 and os.path.exists(temp_audio_file) and os.path.getsize(temp_audio_file) > 1000:
             print(f"[transcribe_fast_groq] Succeeded on attempt {i + 1}: {a['label']} via {proxy_desc}")
             _record_proxy_result(a["proxy"], success=True)
             success = True
@@ -357,41 +352,48 @@ def transcribe_fast_groq(youtube_url: str, job_dir: str) -> str:
 
     print_proxy_health_summary()
 
-    # Universal Fallback: Stream directly using a public mirror if direct connection is blocked
+    # Multi endpoint fallback via public Invidious instances if direct download fails
     if not success:
-        print("[transcribe_fast_groq] Direct yt-dlp attempts failed. Trying external audio stream fallback...")
-        try:
-            video_id = get_video_id(youtube_url)
-            api_req = urllib.request.Request(
-                f"https://api.piped.private.coffee/streams/{video_id}",
-                headers={"User-Agent": "Mozilla/5.0"}
-            )
-            with urllib.request.urlopen(api_req, timeout=15) as resp:
-                data = json.loads(resp.read().decode())
-                audio_streams = data.get("audioStreams", [])
-                if audio_streams:
-                    stream_url = audio_streams[0]["url"]
-                    ffmpeg_cmd = [
-                        "ffmpeg", "-y", "-i", stream_url,
-                        "-vn", "-ar", "16000", "-ac", "1", "-b:a", "64k",
-                        temp_audio_file
+        print("[transcribe_fast_groq] Direct yt-dlp attempts failed. Trying multi-mirror audio stream fallback...")
+        video_id = get_video_id(youtube_url)
+        invidious_instances = [
+            "https://inv.nadeko.net",
+            "https://invidious.nerdvpn.de",
+            "https://yt.drgnz.club"
+        ]
+
+        for base_url in invidious_instances:
+            try:
+                api_url = f"{base_url}/api/v1/videos/{video_id}"
+                req = urllib.request.Request(api_url, headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"})
+                with urllib.request.urlopen(req, timeout=10) as resp:
+                    data = json.loads(resp.read().decode())
+                    audio_formats = [
+                        f for f in data.get("adaptiveFormats", [])
+                        if f.get("type", "").startswith("audio/")
                     ]
-                    subprocess.run(ffmpeg_cmd, check=True, timeout=60)
-                    success = True
-                    print("[transcribe_fast_groq] Fallback audio stream successfully captured.")
-        except Exception as fallback_err:
-            print(f"[transcribe_fast_groq] Fallback stream extraction failed: {fallback_err}")
+                    if audio_formats:
+                        audio_formats.sort(key=lambda x: int(x.get("bitrate", 0)), reverse=True)
+                        stream_url = audio_formats[0]["url"]
+                        ffmpeg_cmd = [
+                            "ffmpeg", "-y", "-i", stream_url,
+                            "-vn", "-ar", "16000", "-ac", "1", "-b:a", "64k",
+                            temp_audio_file
+                        ]
+                        subprocess.run(ffmpeg_cmd, check=True, timeout=60)
+                        if os.path.exists(temp_audio_file) and os.path.getsize(temp_audio_file) > 1000:
+                            success = True
+                            print(f"[transcribe_fast_groq] Fallback captured via {base_url}.")
+                            break
+            except Exception as mirror_err:
+                print(f"[transcribe_fast_groq] Mirror {base_url} failed: {mirror_err}")
+                continue
 
     if not success:
         if os.path.exists(temp_audio_file):
             os.remove(temp_audio_file)
         summary = "; ".join(f"[{label} / {proxy}] {err}" for label, proxy, err in attempt_log)
         raise RuntimeError(f"Failed to capture audio from YouTube after {len(attempts)} attempts: {summary}")
-
-    if not os.path.exists(temp_audio_file) or os.path.getsize(temp_audio_file) < 1000:
-        if os.path.exists(temp_audio_file):
-            os.remove(temp_audio_file)
-        raise RuntimeError("Downloaded audio file is empty or corrupted.")
 
     try:
         print("Transcribing audio via Groq Whisper large_v3_turbo...")
