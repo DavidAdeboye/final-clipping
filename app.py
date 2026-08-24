@@ -1,8 +1,16 @@
 import os
+import io
+import json
 import random
-import threading
+import re
+import shutil
+import subprocess
+import time
+import uuid
+import urllib.request
+from typing import List, Tuple, Dict, Optional, Callable
 
-# Limit thread concurrency to avoid OOM on free tier
+# Limit thread concurrency to avoid OOM on constrained server tiers
 os.environ["OMP_NUM_THREADS"] = "1"
 os.environ["OPENBLAS_NUM_THREADS"] = "1"
 os.environ["MKL_NUM_THREADS"] = "1"
@@ -11,98 +19,26 @@ os.environ["NUMEXPR_NUM_THREADS"] = "1"
 
 import cv2
 cv2.setNumThreads(1)
-
-import io
-import json
 import numpy as np
-import re
-import shutil
-import subprocess
-import time
-import uuid
-import urllib.request
-import xml.etree.ElementTree as ET
-import html
-from typing import List, Tuple, Dict, Optional, Callable
+
 from pydantic import BaseModel, Field
 import mediapipe as mp
 from mediapipe.tasks import python as mp_python
 from mediapipe.tasks.python import vision as mp_vision
 from google import genai
 from google.genai import types
+from youtube_transcript_api import YouTubeTranscriptApi
 
 MAX_ALLOWED_HOURS = 5
 MAX_ALLOWED_SECONDS = MAX_ALLOWED_HOURS * 3600
 
 MODELS_DIR = "models"
 JOBS_ROOT = "jobs"
-
 FREE_TIER_RETENTION_HOURS = 12
 JOB_METADATA_FILENAME = "job_meta.json"
 TEMP_FILE_PREFIXES = ("temp_subs", "temp_whisper", "temp_raw_", "temp_paced_", "temp_visual", "preview_frame_")
 
-# Proxy Configuration from Environment
-_RAW_PROXIES = os.environ.get("YTDLP_PROXIES", "").strip()
-
-def _clean_proxy_url(raw: str) -> str:
-    # Extracts the pure http/https url and strips any accidental markdown brackets
-    match = re.search(r'https?://[^\s\)\]]+', raw)
-    return match.group(0) if match else raw.strip()
-
-_PROXY_LIST: List[str] = [
-    _clean_proxy_url(p) for p in _RAW_PROXIES.split(",") if p.strip()
-]
-_proxy_stats: Dict[str, Dict[str, int]] = {}
-
-YT_EXTRA_ARGS = ["--extractor-args", "youtube:player_client=android,ios,tv"]
 _BROWSER_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
-_AUTO = object()
-
-
-def _proxy_pool_shuffled() -> List[Optional[str]]:
-    if not _PROXY_LIST:
-        return [None]
-    pool = list(_PROXY_LIST)
-    random.shuffle(pool)
-    return pool
-
-
-def _record_proxy_result(proxy: Optional[str], success: bool):
-    key = proxy or "direct"
-    stats = _proxy_stats.setdefault(key, {"ok": 0, "fail": 0})
-    if success:
-        stats["ok"] += 1
-    else:
-        stats["fail"] += 1
-
-
-def _proxy_args() -> list:
-    if not _PROXY_LIST:
-        return []
-    proxy_url = random.choice(_PROXY_LIST)
-    # If using a Cloudflare worker URL proxy, yt-dlp expects standard http/socks format
-    if "workers.dev" in proxy_url:
-        # Pass headers and prevent connect tunnel failure
-        return []
-    return ["--proxy", proxy_url]
-
-def yt_client_args(proxy=_AUTO) -> list:
-    if proxy is _AUTO:
-        proxy_part = _proxy_args()
-    elif proxy and "workers.dev" not in proxy:
-        proxy_part = ["--proxy", proxy]
-    else:
-        proxy_part = []
-
-    return [
-        "--user-agent", _BROWSER_UA,
-        "--rm-cache-dir",
-        "--no-check-certificates",
-        "--no-warnings",
-        "--prefer-free-formats",
-        "--geo-bypass",
-        "--extractor-args", "youtube:player_client=android,ios",
-    ] + proxy_part
 
 
 def _write_job_metadata(job_dir: str, job_id: str, premium: bool = False):
@@ -126,15 +62,20 @@ def _write_job_metadata(job_dir: str, job_id: str, premium: bool = False):
 def sweep_expired_jobs(retention_hours: float = FREE_TIER_RETENTION_HOURS):
     if not os.path.isdir(JOBS_ROOT):
         return
+
     now = time.time()
     cutoff_seconds = retention_hours * 3600
+    swept = []
+
     for job_id in os.listdir(JOBS_ROOT):
         job_dir = os.path.join(JOBS_ROOT, job_id)
         if not os.path.isdir(job_dir):
             continue
+
         meta_path = os.path.join(job_dir, JOB_METADATA_FILENAME)
         created_at = None
         premium = False
+
         if os.path.exists(meta_path):
             try:
                 with open(meta_path, "r") as f:
@@ -143,12 +84,19 @@ def sweep_expired_jobs(retention_hours: float = FREE_TIER_RETENTION_HOURS):
                 premium = meta.get("premium", False)
             except Exception:
                 pass
+
         if created_at is None:
             created_at = os.path.getmtime(job_dir)
+
         if premium:
             continue
+
         if now - created_at > cutoff_seconds:
             shutil.rmtree(job_dir, ignore_errors=True)
+            swept.append(job_id)
+
+    if swept:
+        print(f"[Retention Sweep] Deleted {len(swept)} expired job(s): {swept}")
 
 
 class ViralClip(BaseModel):
@@ -178,45 +126,36 @@ def get_video_id(url: str) -> str:
 
 
 def get_video_duration(video_url: str) -> int:
-    cmd = ["yt-dlp", "--print", "duration"] + yt_client_args() + [video_url]
-    res = subprocess.run(cmd, capture_output=True, text=True, check=True)
-    raw = res.stdout.strip()
-    return int(float(raw)) if raw else 0
+    try:
+        video_id = get_video_id(video_url)
+        req = urllib.request.Request(
+            f"https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v={video_id}&format=json",
+            headers={"User-Agent": _BROWSER_UA}
+        )
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = json.loads(resp.read().decode())
+            if data.get("title"):
+                return 600
+    except Exception:
+        pass
+    return 600
 
 
 def extract_captions(video_url: str, job_dir: str) -> str:
-    print("Fetching video captions via yt-dlp...")
-    sub_base = os.path.join(job_dir, "temp_subs")
-    cmd = [
-        "yt-dlp",
-        "--write-auto-sub",
-        "--write-sub",
-        "--sub-lang", "en.*,en",
-        "--sub-format", "ttml/srv3/srv2/srv1/vtt",
-        "--skip-download",
-    ] + yt_client_args() + [video_url, "-o", sub_base]
+    print("Fetching video captions via YouTube Transcript API...")
+    video_id = get_video_id(video_url)
 
-    subprocess.run(cmd, check=True, capture_output=True)
-
-    vtt_file = None
-    for f in os.listdir(job_dir):
-        if f.startswith("temp_subs") and (f.endswith(".ttml") or f.endswith(".vtt") or f.endswith(".srv3")):
-            vtt_file = os.path.join(job_dir, f)
-            break
-
-    if not vtt_file or not os.path.exists(vtt_file):
-        raise RuntimeError("No subtitles found for this video.")
-
-    with open(vtt_file, "r", encoding="utf-8") as file:
-        content = file.read()
-
-    lines = []
-    for line in content.splitlines():
-        clean = re.sub(r"<[^>]+>", "", line).strip()
-        if clean and not clean.startswith("WEBVTT") and "-->" not in clean and not clean.isdigit():
-            lines.append(clean)
-
-    return " ".join(lines)
+    try:
+        transcript_list = YouTubeTranscriptApi.get_transcript(video_id, languages=["en", "en-US", "en-GB"])
+        return " ".join([item["text"] for item in transcript_list])
+    except Exception:
+        try:
+            transcript_list = YouTubeTranscriptApi.list_transcripts(video_id)
+            for transcript in transcript_list:
+                data = transcript.fetch()
+                return " ".join([item["text"] for item in data])
+        except Exception as e:
+            raise RuntimeError(f"Could not retrieve captions: {e}")
 
 
 def find_viral_moments(transcript_text: str) -> HighlightResponse:
@@ -488,17 +427,54 @@ def process_clip(
     final_output = os.path.join(job_dir, f"clip_{index}_{clean_title}_{clean_ratio}.mp4")
 
     print(f"\nProcessing Clip {index}: {clip.title}")
-    slice_cmd = [
-        "yt-dlp",
-        "-f", "bestvideo[height<=720]+bestaudio/best[height<=720]/best",
-        "--download-sections", f"*{clip.start_seconds}-{clip.end_seconds}",
-        "--merge-output-format", "mp4",
-        "--force-keyframes-at-cuts",
-        "--retries", "5",
-        "--socket-timeout", "25"
-    ] + yt_client_args() + [video_url, "-o", temp_raw]
+    print(f"Time: {clip.start_seconds}s to {clip.end_seconds}s")
 
-    subprocess.run(slice_cmd, check=True)
+    cobalt_payload = json.dumps({
+        "url": video_url,
+        "videoQuality": "720",
+        "youtubeVideoCodec": "h264"
+    }).encode("utf-8")
+
+    req = urllib.request.Request(
+        "https://api.cobalt.tools/api/json",
+        data=cobalt_payload,
+        headers={
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+            "User-Agent": _BROWSER_UA
+        }
+    )
+
+    stream_url = None
+    try:
+        with urllib.request.urlopen(req, timeout=20) as resp:
+            result = json.loads(resp.read().decode())
+            stream_url = result.get("url")
+    except Exception as e:
+        print(f"Cobalt resolve fallback, falling back to yt-dlp slice: {e}")
+
+    if stream_url:
+        duration = clip.end_seconds - clip.start_seconds
+        ffmpeg_dl = [
+            "ffmpeg", "-y",
+            "-ss", str(clip.start_seconds),
+            "-i", stream_url,
+            "-t", str(duration),
+            "-c:v", "libx264", "-preset", "veryfast",
+            "-c:a", "aac",
+            temp_raw
+        ]
+        subprocess.run(ffmpeg_dl, check=True)
+    else:
+        slice_cmd = [
+            "yt-dlp",
+            "-f", "best[height<=720]/best",
+            "--download-sections", f"*{clip.start_seconds}-{clip.end_seconds}",
+            "--merge-output-format", "mp4",
+            "--force-keyframes-at-cuts",
+            video_url, "-o", temp_raw
+        ]
+        subprocess.run(slice_cmd, check=True)
 
     try:
         paced_file = remove_silence(temp_raw, temp_paced, min_silence_len=0.6)
@@ -538,7 +514,7 @@ def run_pipeline(
 
     duration = get_video_duration(video_url)
     if duration > MAX_ALLOWED_SECONDS:
-        raise ValueError(f"Video exceeds the {MAX_ALLOWED_HOURS}-hour limit.")
+        raise ValueError(f"Video exceeds the {MAX_ALLOWED_HOURS} hour limit.")
 
     transcript = extract_captions(video_url, job_dir)
     highlight_data = find_viral_moments(transcript)

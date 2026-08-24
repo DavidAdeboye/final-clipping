@@ -5,6 +5,6 @@ opencv-contrib-python
 numpy
 mediapipe
 youtube-transcript-api
-groq
 google-genai
+yt-dlp
 python-multipart
