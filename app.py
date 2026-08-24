@@ -34,18 +34,17 @@ MAX_ALLOWED_SECONDS = MAX_ALLOWED_HOURS * 3600
 
 COOKIE_FILE = "cookies.txt"
 YT_EXTRA_ARGS = []
-if os.path.exists(COOKIE_FILE):
+if os.path.exists(COOKIE_FILE) and os.path.getsize(COOKIE_FILE) > 100:
     YT_EXTRA_ARGS = ["--cookies", COOKIE_FILE]
-else:
-    print("[Warning] No cookies.txt found. Anonymous requests may be blocked.")
 
-# Use the android player client to bypass YouTube datacenter bot verification
-YT_CLIENT_ARGS = YT_EXTRA_ARGS + [
-    "--extractor-args", "youtube:player_client=android,web",
+# Use iOS and Android mobile clients without overriding with desktop user agents
+YT_CLIENT_ARGS = [
+    "--extractor-args", "youtube:player_client=ios,android,mweb",
     "--no-check-certificates",
     "--no-warnings",
-    "--user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-]
+    "--prefer-free-formats",
+    "--geo-bypass",
+] + YT_EXTRA_ARGS
 
 MODELS_DIR = "models"
 JOBS_ROOT = "jobs"
@@ -178,21 +177,33 @@ def transcribe_fast_groq(youtube_url: str, job_dir: str) -> str:
     print("Downloading audio segment for Groq Whisper transcription...")
     temp_audio_file = os.path.join(job_dir, "temp_whisper.mp3")
 
+    # Command using mobile streaming clients
     cmd = [
         "yt-dlp",
         "-f", "ba/b",
         "-x",
         "--audio-format", "mp3",
-        "-o", temp_audio_file
+        "-o", temp_audio_file,
     ] + YT_CLIENT_ARGS + [youtube_url]
 
-    try:
-        subprocess.run(cmd, check=True, capture_output=True)
-    except subprocess.CalledProcessError as e:
-        err_msg = e.stderr.decode("utf-8", errors="ignore") if e.stderr else str(e)
-        if os.path.exists(temp_audio_file):
-            os.remove(temp_audio_file)
-        raise RuntimeError(f"Failed to capture audio from YouTube: {err_msg}")
+    res = subprocess.run(cmd, capture_output=True, text=True)
+    if res.returncode != 0:
+        # Fallback: try iOS standalone without cookies
+        fallback_cmd = [
+            "yt-dlp",
+            "-f", "140/ba/b",
+            "-x",
+            "--audio-format", "mp3",
+            "--extractor-args", "youtube:player_client=ios",
+            "-o", temp_audio_file,
+            youtube_url,
+        ]
+        res_fb = subprocess.run(fallback_cmd, capture_output=True, text=True)
+        if res_fb.returncode != 0:
+            err_msg = res_fb.stderr or res.stderr or "Unknown download error"
+            if os.path.exists(temp_audio_file):
+                os.remove(temp_audio_file)
+            raise RuntimeError(f"Failed to capture audio from YouTube: {err_msg}")
 
     if not os.path.exists(temp_audio_file) or os.path.getsize(temp_audio_file) < 1000:
         if os.path.exists(temp_audio_file):
@@ -200,7 +211,7 @@ def transcribe_fast_groq(youtube_url: str, job_dir: str) -> str:
         raise RuntimeError("Downloaded audio file is empty or corrupted.")
 
     try:
-        print("Transcribing audio via Groq Whisper large-v3-turbo...")
+        print("Transcribing audio via Groq Whisper large_v3_turbo...")
         client = Groq(api_key=os.environ.get("GROQ_API_KEY"))
         with open(temp_audio_file, "rb") as audio_f:
             transcription = client.audio.transcriptions.create(
@@ -224,7 +235,7 @@ def transcribe_fast_groq(youtube_url: str, job_dir: str) -> str:
     finally:
         if os.path.exists(temp_audio_file):
             os.remove(temp_audio_file)
-            
+
 def fetch_transcript_text(youtube_url: str, video_id: str, job_dir: str) -> str:
     print(f"Checking captions for video: {video_id}...")
 
@@ -976,9 +987,9 @@ def process_clip(video_url: str, clip: ViralClip, index: int, job_dir: str,
     print(f"Reasoning: {clip.reasoning}")
 
     # Use 720p slice max to preserve RAM limits on Render
-    slice_cmd = [
+slice_cmd = [
         "yt-dlp",
-        "-f", "bv*[height<=720]+ba/b[height<=720]/best",
+        "-f", "best[height<=720]/bestvideo[height<=720]+bestaudio/best",
         "--download-sections", f"*{clip.start_seconds}-{clip.end_seconds}",
         "--merge-output-format", "mp4",
         "--force-keyframes-at-cuts",
