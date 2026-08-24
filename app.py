@@ -284,7 +284,7 @@ def _build_ytdlp_audio_cmd(youtube_url: str, temp_audio_file: str, player_client
         "--retries", "3",
         "--fragment-retries", "3",
         "--socket-timeout", "15",
-        "--extractor-args", "youtube:player_client=mweb,android;player_skip=webpage,configs",
+        "--extractor-args", f"youtube:player_client={player_clients}",
         "--rm-cache-dir",
         "--no-check-certificates",
         "--no-warnings",
@@ -309,11 +309,12 @@ def transcribe_fast_groq(youtube_url: str, job_dir: str) -> str:
 
     attempts = []
     if COOKIE_FILE:
-        attempts.append({"client": "mweb", "use_cookies": True, "proxy": None, "label": "direct, cookies (mweb)"})
+        attempts.append({"client": "web", "use_cookies": True, "proxy": None, "label": "direct, cookies (web)"})
+    attempts.append({"client": "tv", "use_cookies": False, "proxy": None, "label": "direct, no cookies (tv)"})
     attempts.append({"client": "android", "use_cookies": False, "proxy": None, "label": "direct, no cookies (android)"})
 
     for p in proxy_sequence[:2]:
-        attempts.append({"client": "mweb", "use_cookies": bool(COOKIE_FILE), "proxy": p, "label": "proxy (mweb)"})
+        attempts.append({"client": "web,tv", "use_cookies": bool(COOKIE_FILE), "proxy": p, "label": "proxy (web/tv)"})
 
     attempt_log = []
     success = False
@@ -342,41 +343,37 @@ def transcribe_fast_groq(youtube_url: str, job_dir: str) -> str:
 
     print_proxy_health_summary()
 
-    # Public Cobalt API fallback
+    # Multi mirror fallback (Cobalt v10 + Piped Stream APIs)
     if not success:
-        print("[transcribe_fast_groq] Direct downloads failed. Using Cobalt API fallback...")
-        cobalt_endpoints = [
-            "https://api.cobalt.tools",
-            "https://cobalt-api.kwiatekm.com",
-            "https://co.wuk.sh"
+        print("[transcribe_fast_groq] Direct downloads failed. Using external audio stream fallback...")
+        video_id = get_video_id(youtube_url)
+
+        # 1. Try Piped API
+        piped_instances = [
+            "https://pipedapi.kavin.rocks",
+            "https://api.piped.privacydev.net",
+            "https://piped-api.lunar.icu"
         ]
-        for endpoint in cobalt_endpoints:
+        for p_url in piped_instances:
             try:
-                payload = json.dumps({
-                    "url": youtube_url,
-                    "downloadMode": "audio",
-                    "audioFormat": "mp3"
-                }).encode("utf-8")
-                req = urllib.request.Request(
-                    f"{endpoint}/",
-                    data=payload,
-                    headers={
-                        "Accept": "application/json",
-                        "Content-Type": "application/json",
-                        "User-Agent": "Mozilla/5.0"
-                    }
-                )
-                with urllib.request.urlopen(req, timeout=15) as resp:
+                req = urllib.request.Request(f"{p_url}/streams/{video_id}", headers={"User-Agent": "Mozilla/5.0"})
+                with urllib.request.urlopen(req, timeout=12) as resp:
                     data = json.loads(resp.read().decode())
-                    download_url = data.get("url")
-                    if download_url:
-                        urllib.request.urlretrieve(download_url, temp_audio_file)
+                    audio_streams = data.get("audioStreams", [])
+                    if audio_streams:
+                        stream_url = audio_streams[0]["url"]
+                        ffmpeg_cmd = [
+                            "ffmpeg", "-y", "-i", stream_url,
+                            "-vn", "-ar", "16000", "-ac", "1", "-b:a", "64k",
+                            temp_audio_file
+                        ]
+                        subprocess.run(ffmpeg_cmd, check=True, timeout=60)
                         if os.path.exists(temp_audio_file) and os.path.getsize(temp_audio_file) > 1000:
                             success = True
-                            print(f"[transcribe_fast_groq] Audio captured via Cobalt ({endpoint}).")
+                            print(f"[transcribe_fast_groq] Audio captured via Piped ({p_url}).")
                             break
             except Exception as e:
-                print(f"[transcribe_fast_groq] Cobalt endpoint {endpoint} failed: {e}")
+                print(f"[transcribe_fast_groq] Piped mirror {p_url} failed: {e}")
                 continue
 
     if not success:
