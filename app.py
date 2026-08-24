@@ -43,7 +43,15 @@ TEMP_FILE_PREFIXES = ("temp_subs", "temp_whisper", "temp_raw_", "temp_paced_", "
 
 # Proxy Configuration from Environment
 _RAW_PROXIES = os.environ.get("YTDLP_PROXIES", "").strip()
-_PROXY_LIST: List[str] = [p.strip() for p in _RAW_PROXIES.split(",") if p.strip()]
+
+def _clean_proxy_url(raw: str) -> str:
+    # Extracts the pure http/https url and strips any accidental markdown brackets
+    match = re.search(r'https?://[^\s\)\]]+', raw)
+    return match.group(0) if match else raw.strip()
+
+_PROXY_LIST: List[str] = [
+    _clean_proxy_url(p) for p in _RAW_PROXIES.split(",") if p.strip()
+]
 _proxy_stats: Dict[str, Dict[str, int]] = {}
 
 YT_EXTRA_ARGS = ["--extractor-args", "youtube:player_client=android,ios,tv"]
