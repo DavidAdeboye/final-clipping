@@ -72,26 +72,51 @@ else:
     print("[Startup] No YTDLP_PROXIES configured — yt-dlp will run without a proxy.")
 
 
-def _proxy_args() -> list:
-    if not _PROXY_LIST:
-        return []
-    chosen = random.choice(_PROXY_LIST)
+def _log_proxy(chosen: str) -> None:
     # Log host:port only — never the credentials — so hangs/timeouts can be
     # traced back to a specific proxy without leaking secrets into logs.
     _, _, host_port = chosen.rpartition("@")
     print(f"[yt-dlp] Using proxy: {host_port or '(unparseable)'}")
+
+
+def _proxy_args() -> list:
+    if not _PROXY_LIST:
+        return []
+    chosen = random.choice(_PROXY_LIST)
+    _log_proxy(chosen)
     return ["--proxy", chosen]
 
 
-def yt_client_args() -> list:
-    """Fresh args per call so proxy rotation actually rotates."""
+def _proxy_pool_shuffled() -> list:
+    """A shuffled copy of the proxy pool, for retry loops that should try
+    DISTINCT proxies rather than risk randomly repeating the same one."""
+    pool = list(_PROXY_LIST)
+    random.shuffle(pool)
+    return pool
+
+
+_AUTO = object()  # sentinel: pick a random proxy (default, used by most call sites)
+
+
+def yt_client_args(proxy=_AUTO) -> list:
+    """Fresh args per call. By default picks a random proxy; pass an explicit
+    proxy URL (or None for no proxy) when a caller needs to control which
+    proxy is used, e.g. cycling through distinct ones across retries."""
+    if proxy is _AUTO:
+        proxy_part = _proxy_args()
+    elif proxy:
+        _log_proxy(proxy)
+        proxy_part = ["--proxy", proxy]
+    else:
+        proxy_part = []
+
     return [
         "--extractor-args", f"youtube:player_client={_PLAYER_CLIENTS}",
         "--no-check-certificates",
         "--no-warnings",
         "--prefer-free-formats",
         "--geo-bypass",
-    ] + YT_EXTRA_ARGS + _proxy_args()
+    ] + YT_EXTRA_ARGS + proxy_part
 
 MODELS_DIR = "models"
 JOBS_ROOT = "jobs"
@@ -227,22 +252,26 @@ def transcribe_fast_groq(youtube_url: str, job_dir: str) -> str:
     DOWNLOAD_TIMEOUT_SEC = 180  # audio-only download; if a proxy is dead/slow, fail fast instead of hanging the job
     last_stderr = ""
 
-    # Try up to 3 times, each with a freshly-chosen proxy (yt_client_args()
-    # re-rolls the proxy on every call), since a single dead/slow proxy in
-    # the pool shouldn't be able to hang the whole job.
-    for attempt in range(3):
+    # Cycle through DISTINCT proxies across retries (not random re-picks,
+    # which can land on the same proxy twice and waste a retry) so a single
+    # flagged/dead proxy can't eat more than one attempt.
+    proxy_sequence = _proxy_pool_shuffled() if _PROXY_LIST else [None]
+    max_attempts = min(4, len(proxy_sequence))
+
+    for attempt in range(max_attempts):
+        proxy_choice = proxy_sequence[attempt]
         cmd = [
             "yt-dlp",
             "-f", "ba/b",
             "-x",
             "--audio-format", "mp3",
             "-o", temp_audio_file,
-        ] + yt_client_args() + [youtube_url]
+        ] + yt_client_args(proxy=proxy_choice) + [youtube_url]
 
         try:
             res = subprocess.run(cmd, capture_output=True, text=True, timeout=DOWNLOAD_TIMEOUT_SEC)
         except subprocess.TimeoutExpired:
-            print(f"[Warning] yt-dlp audio download timed out after {DOWNLOAD_TIMEOUT_SEC}s (attempt {attempt + 1}/3). Retrying with a different proxy...")
+            print(f"[Warning] yt-dlp audio download timed out after {DOWNLOAD_TIMEOUT_SEC}s (attempt {attempt + 1}/{max_attempts}). Retrying with a different proxy...")
             last_stderr = f"Timed out after {DOWNLOAD_TIMEOUT_SEC}s"
             continue
 
@@ -250,8 +279,11 @@ def transcribe_fast_groq(youtube_url: str, job_dir: str) -> str:
             break
         last_stderr = res.stderr or last_stderr
     else:
-        # All 3 attempts failed — try the fallback client once before giving up
+        # All attempts failed — try the fallback client once, on a proxy we
+        # haven't already burned above (if we have more than max_attempts
+        # in the pool), before giving up.
         fallback_client = "web" if COOKIE_FILE else "ios"
+        fallback_proxy = proxy_sequence[max_attempts] if len(proxy_sequence) > max_attempts else (proxy_sequence[0] if proxy_sequence[0] else None)
         fallback_cmd = [
             "yt-dlp",
             "-f", "140/ba/b",
@@ -259,7 +291,9 @@ def transcribe_fast_groq(youtube_url: str, job_dir: str) -> str:
             "--audio-format", "mp3",
             "--extractor-args", f"youtube:player_client={fallback_client}",
             "-o", temp_audio_file,
-        ] + YT_EXTRA_ARGS + _proxy_args() + [youtube_url]
+        ] + YT_EXTRA_ARGS + (["--proxy", fallback_proxy] if fallback_proxy else []) + [youtube_url]
+        if fallback_proxy:
+            _log_proxy(fallback_proxy)
         try:
             res_fb = subprocess.run(fallback_cmd, capture_output=True, text=True, timeout=DOWNLOAD_TIMEOUT_SEC)
         except subprocess.TimeoutExpired:
@@ -1057,8 +1091,12 @@ def process_clip(video_url: str, clip: ViralClip, index: int, job_dir: str,
     # Use 720p slice max to preserve RAM limits on Render
     SLICE_TIMEOUT_SEC = 240
 
+    slice_proxy_sequence = _proxy_pool_shuffled() if _PROXY_LIST else [None]
+    slice_max_attempts = min(3, len(slice_proxy_sequence))
+
     download_success = False
-    for attempt in range(3):
+    for attempt in range(slice_max_attempts):
+        proxy_choice = slice_proxy_sequence[attempt]
         slice_cmd = [
             "yt-dlp",
             "-f", "best[height<=720]/bestvideo[height<=720]+bestaudio/best",
@@ -1067,10 +1105,10 @@ def process_clip(video_url: str, clip: ViralClip, index: int, job_dir: str,
             "--force-keyframes-at-cuts",
             "--retries", "10",
             "--fragment-retries", "10"
-        ] + yt_client_args() + [video_url, "-o", temp_raw]  # fresh proxy pick each attempt
+        ] + yt_client_args(proxy=proxy_choice) + [video_url, "-o", temp_raw]
 
         try:
-            print(f"Downloading section (Attempt {attempt + 1}/3)...")
+            print(f"Downloading section (Attempt {attempt + 1}/{slice_max_attempts})...")
             subprocess.run(slice_cmd, check=True, timeout=SLICE_TIMEOUT_SEC)
             download_success = True
             break
@@ -1078,7 +1116,7 @@ def process_clip(video_url: str, clip: ViralClip, index: int, job_dir: str,
             print(f"[Warning] Clip download timed out after {SLICE_TIMEOUT_SEC}s. Retrying with a different proxy...")
             time.sleep(4)
         except subprocess.CalledProcessError:
-            print("CDN connection reset detected. Retrying in 4s...")
+            print("CDN connection reset detected. Retrying with a different proxy in 4s...")
             time.sleep(4)
 
     if not download_success:
