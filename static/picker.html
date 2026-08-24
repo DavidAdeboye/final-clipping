@@ -3,11 +3,11 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>AutoClip Studio</title>
+<title>AutoClip · Studio</title>
+<link rel="icon" type="image/svg+xml" href="/favicon.ico">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
-<link rel="icon" type="image/svg+xml" href='data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="%2314171e"/><stop offset="1" stop-color="%2307080a"/></linearGradient></defs><rect width="512" height="512" rx="112" fill="url(%23g)"/><path d="M168 376 L232 144 C236 130 248 120 264 120 C280 120 292 130 296 144 L360 376 C364 390 354 404 340 404 C328 404 318 396 314 384 L294 312 L218 312 L198 384 C194 396 184 404 172 404 C158 404 148 390 152 376 Z" fill="%23d7ff63"/><path d="M256 196 L284 272 L228 272 Z" fill="%2307080a"/><path d="M120 168 L120 136 C120 127 127 120 136 120 L168 120" fill="none" stroke="%23d7ff63" stroke-width="14" stroke-linecap="round"/><path d="M392 344 L392 376 C392 385 385 392 376 392 L344 392" fill="none" stroke="%23d7ff63" stroke-width="14" stroke-linecap="round"/></svg>'>
 <style>
 :root {
   --bg: #07080a;
@@ -43,7 +43,7 @@ body {
 
 .sidebar {
   border-right: 1px solid var(--border);
-  background: rgba(14, 16, 21, 0.7);
+  background: rgba(14, 16, 21, 0.85);
   backdrop-filter: blur(16px);
   display: flex;
   flex-direction: column;
@@ -68,7 +68,7 @@ body {
   box-shadow: 0 0 20px var(--accent-glow);
 }
 
-.nav { display: flex; flex-direction: column; gap: 12px; margin-top: 40px; }
+.nav { display: flex; flex-direction: column; gap: 10px; margin-top: 36px; }
 .nav-btn {
   width: 44px;
   height: 44px;
@@ -81,12 +81,12 @@ body {
   cursor: pointer;
   transition: all 0.15s ease;
 }
-.nav-btn svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
 .nav-btn:hover, .nav-btn.active {
   background: var(--panel-elevated);
   border-color: var(--border);
   color: var(--accent);
 }
+.nav-btn svg { width: 20px; height: 20px; }
 
 .main { min-width: 0; }
 .topbar {
@@ -128,6 +128,9 @@ body {
 .hero h1 { font-size: 32px; font-weight: 700; letter-spacing: -0.03em; }
 .hero p { margin-top: 8px; color: var(--text-muted); font-size: 14px; }
 
+.view-section { display: none; }
+.view-section.active { display: block; }
+
 .workspace { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(320px, 0.8fr); gap: 24px; align-items: start; }
 
 .card {
@@ -144,7 +147,7 @@ body {
   justify-content: space-between;
   align-items: center;
 }
-.card-title { font-size: 13px; font-weight: 600; display: flex; align-items: center; gap: 8px; }
+.card-title { font-size: 13px; font-weight: 600; letter-spacing: -0.01em; display: flex; align-items: center; gap: 8px; }
 .badge { font: 600 10px var(--font-mono); padding: 3px 6px; border-radius: 4px; background: var(--panel-elevated); color: var(--text-muted); border: 1px solid var(--border); }
 .card-body { padding: 20px; }
 
@@ -226,7 +229,7 @@ body {
   color: var(--accent);
   border: 1px solid rgba(215, 255, 99, 0.2);
 }
-.mode-title { font-size: 13px; font-weight: 600; }
+.mode-title { font-size: 13px; font-weight: 600; color: var(--text-primary); }
 .mode-desc { font-size: 11px; color: var(--text-muted); line-height: 1.4; }
 
 .btn-primary {
@@ -285,7 +288,6 @@ body {
   padding: 12px;
   display: flex;
   flex-direction: column;
-  position: relative;
 }
 .clip-video-wrap {
   position: relative;
@@ -303,28 +305,27 @@ body {
   height: 100%;
   object-fit: contain;
 }
-.countdown-badge {
+.expiry-badge {
   position: absolute;
-  top: 18px;
-  right: 18px;
-  z-index: 5;
+  top: 10px;
+  left: 10px;
   background: rgba(14, 16, 21, 0.85);
   backdrop-filter: blur(8px);
   border: 1px solid var(--border);
-  padding: 4px 8px;
   border-radius: 6px;
-  font: 600 10px var(--font-mono);
-  color: #ff9b9b;
+  padding: 4px 8px;
   display: flex;
   align-items: center;
-  gap: 5px;
+  gap: 6px;
+  font: 600 10px var(--font-mono);
+  color: #ffaa40;
+  z-index: 2;
 }
-.countdown-badge::before {
-  content: '';
-  width: 6px;
-  height: 6px;
+.expiry-dot {
+  width: 5px;
+  height: 5px;
   border-radius: 50%;
-  background: var(--danger);
+  background: #ffaa40;
 }
 .clip-info {
   display: flex;
@@ -342,11 +343,10 @@ body {
   text-decoration: none;
 }
 
-/* Library View */
-#library-view { display: none; }
+/* Library View Styles */
 .projects-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(290px, 1fr));
   gap: 18px;
 }
 .project-card {
@@ -355,21 +355,22 @@ body {
   border-radius: var(--radius);
   overflow: hidden;
   cursor: pointer;
-  transition: all 0.2s ease;
-  position: relative;
+  transition: all 0.15s ease;
+  display: flex;
+  flex-direction: column;
 }
 .project-card:hover {
   transform: translateY(-2px);
-  border-color: var(--border-focus);
+  border-color: var(--accent);
 }
 .project-thumb-wrap {
   position: relative;
-  aspect-ratio: 16 / 9;
   background: #000;
-  overflow: hidden;
+  aspect-ratio: 16 / 9;
   display: flex;
   align-items: center;
   justify-content: center;
+  overflow: hidden;
 }
 .project-thumb-wrap video {
   width: 100%;
@@ -379,19 +380,35 @@ body {
 }
 .project-card-body {
   padding: 14px 16px;
-}
-.project-header-row {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  margin-bottom: 6px;
 }
-.project-date { font: 11px var(--font-mono); color: var(--text-muted); }
-.project-clips-count { font: 600 11px var(--font-mono); color: var(--accent); }
+.project-date { font-size: 13px; font-weight: 600; color: var(--text-primary); }
+.project-id-sub { font: 10px var(--font-mono); color: var(--text-dim); margin-top: 2px; }
 
+/* Responsive Mobile Rules */
 @media(max-width: 900px) {
   .app-shell { grid-template-columns: 1fr; }
-  .sidebar { display: none; }
+  .sidebar {
+    position: fixed;
+    bottom: 0;
+    top: auto;
+    left: 0;
+    right: 0;
+    height: 64px;
+    width: 100%;
+    flex-direction: row;
+    justify-content: space-around;
+    padding: 0 16px;
+    border-right: none;
+    border-top: 1px solid var(--border);
+    background: rgba(14, 16, 21, 0.95);
+  }
+  .sidebar .logo { display: none; }
+  .sidebar .nav { flex-direction: row; gap: 32px; margin-top: 0; }
+  .topbar { padding: 0 16px; }
+  .content { padding: 20px 16px 88px; }
   .workspace { grid-template-columns: 1fr; }
 }
 </style>
@@ -400,19 +417,13 @@ body {
 
 <div class="app-shell">
   <aside class="sidebar">
-    <div class="logo" style="padding: 4px; background: transparent; box-shadow: none;">
-  <svg viewBox="0 0 512 512" width="100%" height="100%">
-    <rect width="512" height="512" rx="128" fill="#14171e" stroke="#1e222b" stroke-width="8"/>
-    <path d="M168 376 L232 144 C236 130 248 120 264 120 C280 120 292 130 296 144 L360 376 C364 390 354 404 340 404 C328 404 318 396 314 384 L294 312 L218 312 L198 384 C194 396 184 404 172 404 C158 404 148 390 152 376 Z" fill="#d7ff63"/>
-    <path d="M256 196 L284 272 L228 272 Z" fill="#14171e"/>
-  </svg>
-</div>
+    <div class="logo">A</div>
     <nav class="nav">
-      <button class="nav-btn active" id="tab-studio-btn" onclick="switchView('studio')" title="Studio">
-        <svg viewBox="0 0 24 24"><path d="M12 3v18M3 12h18"/></svg>
+      <button class="nav-btn active" id="nav-create" onclick="switchTab('create')" title="Create Clips">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg>
       </button>
-      <button class="nav-btn" id="tab-library-btn" onclick="switchView('library')" title="Past Clips / Library">
-        <svg viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h7"/></svg>
+      <button class="nav-btn" id="nav-library" onclick="switchTab('library')" title="Clip Library">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect width="7" height="9" x="3" y="3" rx="1"/><rect width="7" height="5" x="14" y="3" rx="1"/><rect width="7" height="9" x="14" y="12" rx="1"/><rect width="7" height="5" x="3" y="16" rx="1"/></svg>
       </button>
     </nav>
   </aside>
@@ -422,7 +433,7 @@ body {
       <div class="breadcrumbs">
         <div>AutoClip Studio</div>
         <span>/</span>
-        <div id="topbar-section-title" style="color:var(--text-muted)">Workspace</div>
+        <div style="color:var(--text-muted)" id="topbar-view-name">Workspace</div>
       </div>
       <div class="status-pill">
         <div class="status-dot"></div>
@@ -432,8 +443,8 @@ body {
 
     <div class="content">
 
-      <!-- STUDIO VIEW -->
-      <div id="studio-view">
+      <!-- CREATE VIEW -->
+      <div id="view-create" class="view-section active">
         <div class="hero">
           <h1>Transform Long Videos into Clips</h1>
           <p>Intelligent framing, instant transcript parsing, and clean short form rendering.</p>
@@ -579,7 +590,7 @@ body {
             <div class="card" id="clips-wrapper">
               <div class="card-head">
                 <div class="card-title">Generated Short Clips</div>
-                <span class="badge">ACTIVE SESSION</span>
+                <span class="badge">OUTPUT</span>
               </div>
               <div class="card-body">
                 <div class="clips-grid" id="clips-list"></div>
@@ -601,25 +612,12 @@ body {
       </div>
 
       <!-- LIBRARY VIEW -->
-      <div id="library-view">
+      <div id="view-library" class="view-section">
         <div class="hero">
-          <h1>Project Library</h1>
-          <p>Review past sessions, download exports, and check auto delete retention timers.</p>
+          <h1>Clip Library</h1>
+          <p>Browse previously generated sessions and export historical clips.</p>
         </div>
-
-        <div id="library-content">
-          <div class="projects-grid" id="projects-list"></div>
-        </div>
-
-        <div class="card" id="library-session-detail" style="display:none; margin-top:24px;">
-          <div class="card-head">
-            <div class="card-title" id="detail-session-title">Session Clips</div>
-            <button class="btn-secondary" onclick="closeSessionDetail()" style="max-width:140px; padding:6px 12px;">Back to Library</button>
-          </div>
-          <div class="card-body">
-            <div class="clips-grid" id="session-clips-list"></div>
-          </div>
-        </div>
+        <div id="library-content" class="projects-grid"></div>
       </div>
 
     </div>
@@ -634,122 +632,89 @@ let currentFrameIdx = 0;
 let box = null;
 let jobStartTime = null;
 let renderedClips = new Set();
+let jobCreatedAt = Date.now();
 const TOTAL_EXPECTED_CLIPS = 3;
 const ESTIMATED_TOTAL_SECONDS = 90;
+const RETENTION_HOURS = 12;
+
+function getClientId() {
+  let cid = localStorage.getItem('autoclip_client_id');
+  if (!cid) {
+    cid = 'client_' + (window.crypto && crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).substring(2));
+    localStorage.setItem('autoclip_client_id', cid);
+  }
+  return cid;
+}
+
+function switchTab(tab) {
+  document.getElementById('nav-create').className = 'nav-btn' + (tab === 'create' ? ' active' : '');
+  document.getElementById('nav-library').className = 'nav-btn' + (tab === 'library' ? ' active' : '');
+  document.getElementById('view-create').className = 'view-section' + (tab === 'create' ? ' active' : '');
+  document.getElementById('view-library').className = 'view-section' + (tab === 'library' ? ' active' : '');
+  document.getElementById('topbar-view-name').textContent = tab === 'create' ? 'Workspace' : 'Library';
+  if (tab === 'library') loadLibrary();
+}
+
+async function loadLibrary() {
+  const container = document.getElementById('library-content');
+  container.innerHTML = '<div style="color:var(--text-muted); font-size:13px;">Loading sessions...</div>';
+  try {
+    const res = await fetch(`/projects?client_id=${getClientId()}`);
+    const projects = await res.json();
+    if (!projects || projects.length === 0) {
+      container.innerHTML = '<div style="color:var(--text-muted); font-size:13px;">No past sessions found.</div>';
+      return;
+    }
+    container.innerHTML = '';
+    projects.forEach((proj) => {
+      const date = new Date(proj.created_at * 1000).toLocaleString('en-US', {
+        month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit'
+      });
+      const card = document.createElement('div');
+      card.className = 'project-card';
+      card.onclick = () => openPastSession(proj);
+      card.innerHTML = `
+        <div class="project-thumb-wrap">
+          <video src="${proj.first_clip}" preload="metadata"></video>
+        </div>
+        <div class="project-card-body">
+          <div>
+            <div class="project-date">${date}</div>
+            <div class="project-id-sub">JOB #${proj.job_id.slice(0, 8).toUpperCase()}</div>
+          </div>
+          <span class="badge">${proj.clips_count} CLIPS</span>
+        </div>
+      `;
+      container.appendChild(card);
+    });
+  } catch (e) {
+    container.innerHTML = `<div style="color:var(--danger); font-size:13px;">Failed to load library: ${e.message}</div>`;
+  }
+}
+
+function openPastSession(proj) {
+  switchTab('create');
+  jobId = proj.job_id;
+  jobCreatedAt = proj.created_at * 1000;
+  renderedClips.clear();
+  document.getElementById('clips-list').innerHTML = '';
+  appendNewClips(proj.clips, jobCreatedAt);
+  document.getElementById('clips-wrapper').scrollIntoView({ behavior: 'smooth' });
+}
+
+function getRemainingExpiryTime(createdAt) {
+  const expiryTime = createdAt + (RETENTION_HOURS * 3600 * 1000);
+  const diff = expiryTime - Date.now();
+  if (diff <= 0) return 'Expired';
+  const hours = Math.floor(diff / (1000 * 60 * 60));
+  const mins = Math.floor((diff % (1000 * 60 * 60)) / (1000 * 60));
+  return `${hours}h ${mins}m left`;
+}
 
 function formatTime(seconds) {
   const m = Math.floor(seconds / 60);
   const s = Math.floor(seconds % 60);
   return `${m}:${s < 10 ? '0' : ''}${s}`;
-}
-
-function formatCountdown(targetEpochSec) {
-  const diffSec = targetEpochSec - Math.floor(Date.now() / 1000);
-  if (diffSec <= 0) return 'Expired';
-  const hours = Math.floor(diffSec / 3600);
-  const minutes = Math.floor((diffSec % 3600) / 60);
-  return `${hours}h ${minutes}m left`;
-}
-
-function switchView(viewName) {
-  const studio = document.getElementById('studio-view');
-  const library = document.getElementById('library-view');
-  const studioBtn = document.getElementById('tab-studio-btn');
-  const libBtn = document.getElementById('tab-library-btn');
-  const title = document.getElementById('topbar-section-title');
-
-  if (viewName === 'studio') {
-    studio.style.display = 'block';
-    library.style.display = 'none';
-    studioBtn.classList.add('active');
-    libBtn.classList.remove('active');
-    title.textContent = 'Workspace';
-  } else {
-    studio.style.display = 'none';
-    library.style.display = 'block';
-    studioBtn.classList.remove('active');
-    libBtn.classList.add('active');
-    title.textContent = 'Library';
-    loadLibraryProjects();
-  }
-}
-
-async function loadLibraryProjects() {
-  const target = document.getElementById('projects-list');
-  target.innerHTML = '<div style="color:var(--text-muted); font-size:13px;">Loading projects...</div>';
-  document.getElementById('library-session-detail').style.display = 'none';
-
-  try {
-    const res = await fetch('/jobs');
-    const data = await res.json();
-    target.innerHTML = '';
-
-    if (!data.projects || data.projects.length === 0) {
-      target.innerHTML = '<div style="color:var(--text-muted); font-size:13px;">No past sessions found.</div>';
-      return;
-    }
-
-    data.projects.forEach((proj) => {
-      const card = document.createElement('div');
-      card.className = 'project-card';
-      const dateStr = new Date(proj.created_at * 1000).toLocaleString('en-US', {
-        month: 'short', day: 'numeric', hour: 'numeric', minute: 'numeric'
-      });
-      const countdown = formatCountdown(proj.expires_at);
-
-      card.innerHTML = `
-        <div class="countdown-badge">${countdown}</div>
-        <div class="project-thumb-wrap">
-          <video src="${proj.thumbnail_url}#t=0.5" preload="metadata" muted></video>
-        </div>
-        <div class="project-card-body">
-          <div class="project-header-row">
-            <span class="project-clips-count">${proj.clip_count} CLIPS</span>
-            <span class="project-date">${dateStr}</span>
-          </div>
-          <div style="font:11px var(--font-mono); color:var(--text-dim);">#${proj.job_id.slice(0, 8).toUpperCase()}</div>
-        </div>
-      `;
-      card.onclick = () => openSessionDetail(proj);
-      target.appendChild(card);
-    });
-  } catch (e) {
-    target.innerHTML = `<div style="color:var(--danger); font-size:13px;">Failed to load library: ${e.message}</div>`;
-  }
-}
-
-function openSessionDetail(proj) {
-  const target = document.getElementById('session-clips-list');
-  const detail = document.getElementById('library-session-detail');
-  const title = document.getElementById('detail-session-title');
-  target.innerHTML = '';
-  
-  title.textContent = `Session #${proj.job_id.slice(0, 8).toUpperCase()} (${proj.clip_count} clips)`;
-  const countdown = formatCountdown(proj.expires_at);
-
-  proj.clips.forEach((url, i) => {
-    const rawName = url.split('/').pop();
-    const card = document.createElement('div');
-    card.className = 'clip-card';
-    card.innerHTML = `
-      <div class="countdown-badge">${countdown}</div>
-      <div class="clip-video-wrap">
-        <video src="${url}" controls playsinline preload="metadata"></video>
-      </div>
-      <div class="clip-info">
-        <div class="clip-title" title="${rawName}">Clip 0${i + 1}</div>
-        <a href="${url}" download="${rawName}" class="btn-download">Download</a>
-      </div>
-    `;
-    target.appendChild(card);
-  });
-
-  detail.style.display = 'block';
-  detail.scrollIntoView({ behavior: 'smooth', block: 'start' });
-}
-
-function closeSessionDetail() {
-  document.getElementById('library-session-detail').style.display = 'none';
 }
 
 function updateStatusUI(statusText, etaText = '') {
@@ -783,6 +748,7 @@ async function startJob() {
   document.getElementById('clips-wrapper').style.display = 'none';
   
   jobStartTime = Date.now();
+  jobCreatedAt = Date.now();
   updateStatusUI('Initializing job...', 'ETA: ~1:30');
 
   try {
@@ -793,10 +759,12 @@ async function startJob() {
         youtube_url: url,
         aspect_ratio: getSelectedAspect(),
         mode: getSelectedMode(),
+        client_id: getClientId()
       }),
     });
     const data = await res.json();
     jobId = data.job_id;
+    localStorage.setItem('autoclip_active_job', jobId);
     poll();
   } catch (e) {
     updateStatusUI('Connection error: ' + e.message);
@@ -811,7 +779,7 @@ async function poll() {
     const job = await res.json();
 
     if (job.clips && job.clips.length > 0) {
-      appendNewClips(job.clips);
+      appendNewClips(job.clips, jobCreatedAt);
     }
 
     if (job.status === 'queued' || job.status === 'running') {
@@ -841,11 +809,13 @@ async function poll() {
       updateStatusUI('All clips rendered successfully.', 'COMPLETED');
       document.getElementById('startBtn').disabled = false;
       document.getElementById('picker').style.display = 'none';
+      localStorage.removeItem('autoclip_active_job');
 
     } else if (job.status === 'error') {
       updateStatusUI('Failed: ' + job.error, 'ERROR');
       document.getElementById('startBtn').disabled = false;
       document.getElementById('picker').style.display = 'none';
+      localStorage.removeItem('autoclip_active_job');
     }
   } catch (e) {
     pollTimer = setTimeout(poll, 3000);
@@ -963,52 +933,6 @@ function appendNewClips(clips, createdAt = Date.now()) {
   }
 }
 
-// Get or create an anonymous client UUID
-function getClientId() {
-  let cid = localStorage.getItem('autoclip_client_id');
-  if (!cid) {
-    cid = 'client_' + crypto.randomUUID();
-    localStorage.setItem('autoclip_client_id', cid);
-  }
-  return cid;
-}
-
-// Save active job ID on start so page refresh doesn't lose progress
-async function startJob() {
-  const url = document.getElementById('url').value.trim();
-  if (!url) return updateStatusUI('Paste a source video URL first');
-
-  document.getElementById('startBtn').disabled = true;
-  renderedClips.clear();
-  document.getElementById('clips-list').innerHTML = '';
-  document.getElementById('clips-wrapper').style.display = 'none';
-
-  jobStartTime = Date.now();
-  jobCreatedAt = Date.now();
-  updateStatusUI('Initializing job...', 'ETA: ~1:30');
-
-  try {
-    const res = await fetch('/jobs', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        youtube_url: url,
-        aspect_ratio: getSelectedAspect(),
-        mode: getSelectedMode(),
-        client_id: getClientId() // Send user's local ID
-      }),
-    });
-    const data = await res.json();
-    jobId = data.job_id;
-    localStorage.setItem('autoclip_active_job', jobId);
-    poll();
-  } catch (e) {
-    updateStatusUI('Connection error: ' + e.message);
-    document.getElementById('startBtn').disabled = false;
-  }
-}
-
-// On page reload: auto-resume polling if a job was active
 window.addEventListener('DOMContentLoaded', () => {
   const activeJob = localStorage.getItem('autoclip_active_job');
   if (activeJob) {
@@ -1016,23 +940,6 @@ window.addEventListener('DOMContentLoaded', () => {
     poll();
   }
 });
-
-// Update loadLibrary to only ask for THIS client's projects
-async function loadLibrary() {
-  const container = document.getElementById('library-content');
-  container.innerHTML = '<div style="color:var(--text-muted); font-size:13px;">Loading sessions...</div>';
-  try {
-    const res = await fetch(`/projects?client_id=${getClientId()}`);
-    const projects = await res.json();
-    if (!projects || projects.length === 0) {
-      container.innerHTML = '<div style="color:var(--text-muted); font-size:13px;">No past sessions found.</div>';
-      return;
-    }
-    // Render cards normally...
-  } catch (e) {
-    container.innerHTML = `<div style="color:var(--danger); font-size:13px;">Failed to load library: ${e.message}</div>`;
-  }
-}
 </script>
 </body>
 </html>

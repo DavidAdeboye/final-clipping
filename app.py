@@ -224,8 +224,7 @@ def transcribe_fast_groq(youtube_url: str, job_dir: str) -> str:
     finally:
         if os.path.exists(temp_audio_file):
             os.remove(temp_audio_file)
-
-
+            
 def fetch_transcript_text(youtube_url: str, video_id: str, job_dir: str) -> str:
     print(f"Checking captions for video: {video_id}...")
 

@@ -10,6 +10,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
+from fastapi.responses import Response
 
 import app as core
 
@@ -81,6 +82,17 @@ class StartJobRequest(BaseModel):
     aspect_ratio: str = "9:16"
     mode: str = "split"
     client_id: Optional[str] = None # Added field
+
+@app.get("/favicon.ico", include_in_schema=False)
+async def favicon():
+    svg = '''<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+      <defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#14171e"/><stop offset="1" stop-color="#07080a"/></linearGradient></defs>
+      <rect width="512" height="512" rx="112" fill="url(#g)"/>
+      <path d="M168 376 L232 144 C236 130 248 120 264 120 C280 120 292 130 296 144 L360 376 C364 390 354 404 340 404 C328 404 318 396 314 384 L294 312 L218 312 L198 384 C194 396 184 404 172 404 C158 404 148 390 152 376 Z" fill="#d7ff63"/>
+      <path d="M256 196 L284 272 L228 272 Z" fill="#07080a"/>
+    </svg>'''
+    return Response(content=svg, media_type="image/svg+xml")
+
 
 @app.post("/jobs")
 def start_job(req: StartJobRequest):
