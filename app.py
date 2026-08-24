@@ -256,8 +256,8 @@ def find_viral_moments_direct(video_url: str) -> HighlightResponse:
     """
 
     priority_models = [
-        "gemini-2.5-flash",
-        "gemini-2.0-flash",
+        "gemini-3.6-flash",
+        "gemini-3.7-flash",
     ]
 
     for model_name in priority_models:
