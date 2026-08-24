@@ -59,8 +59,8 @@ else:
 # clients and authenticate via device tokens, NOT browser cookies — pairing them
 # with --cookies means the cookies are silently ignored on those attempts.
 # "web"/"mweb" are the clients that actually honor browser-exported cookies.
-_PLAYER_CLIENTS = "web,mweb" if COOKIE_FILE else "ios,android,mweb"
-
+# iOS and Android clients bypass the desktop web bot check entirely
+_PLAYER_CLIENTS = "android,ios"
 # Rotating proxy pool. Set YTDLP_PROXIES on the server (Render env var, never
 # committed to git) to a comma-separated list of full proxy URLs, e.g.:
 #   http://user:pass@ip1:port1,http://user:pass@ip2:port2,...
@@ -150,7 +150,8 @@ def yt_client_args(proxy=_AUTO) -> list:
         proxy_part = []
 
     return [
-        "--extractor-args", f"youtube:player_client={_PLAYER_CLIENTS}",
+        "--user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+        "--extractor-args", f"youtube:player_client={_PLAYER_CLIENTS};player_skip=webpage,configs",
         "--no-check-certificates",
         "--no-warnings",
         "--prefer-free-formats",
@@ -296,18 +297,14 @@ def validate_video_duration(youtube_url: str) -> int:
 
 def _build_ytdlp_audio_cmd(youtube_url: str, temp_audio_file: str, player_clients: str,
                             use_cookies: bool, proxy: Optional[str]) -> list:
-    """Fresh yt-dlp command for an audio-only download. player_clients and
-    use_cookies are passed explicitly (rather than read off the global
-    COOKIE_FILE-derived defaults) so callers can deliberately test a
-    cookie-less / different-client combo instead of always repeating the
-    same one."""
     cmd = [
         "yt-dlp",
         "-f", "ba/b",
         "-x",
         "--audio-format", "mp3",
         "-o", temp_audio_file,
-        "--extractor-args", f"youtube:player_client={player_clients}",
+        "--user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+        "--extractor-args", f"youtube:player_client={player_clients};player_skip=webpage,configs",
         "--no-check-certificates",
         "--no-warnings",
         "--prefer-free-formats",
@@ -322,7 +319,6 @@ def _build_ytdlp_audio_cmd(youtube_url: str, temp_audio_file: str, player_client
         print("[yt-dlp] No proxy (direct)")
     cmd.append(youtube_url)
     return cmd
-
 
 def transcribe_fast_groq(youtube_url: str, job_dir: str) -> str:
     print("Downloading audio segment for Groq Whisper transcription...")
