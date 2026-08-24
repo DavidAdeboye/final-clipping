@@ -32,10 +32,26 @@ from google.genai import types
 MAX_ALLOWED_HOURS = 5
 MAX_ALLOWED_SECONDS = MAX_ALLOWED_HOURS * 3600
 
-COOKIE_FILE = "cookies.txt"
-YT_EXTRA_ARGS = []
-if os.path.exists(COOKIE_FILE) and os.path.getsize(COOKIE_FILE) > 100:
+_SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+_COOKIE_CANDIDATES = [
+    os.environ.get("YTDLP_COOKIES_PATH", ""),   # explicit override via env var
+    "/etc/secrets/cookies.txt",                  # Render "Secret Files" mount point
+    os.path.join(_SCRIPT_DIR, "cookies.txt"),    # next to app.py, regardless of cwd
+    "cookies.txt",                                # last resort: relative to cwd
+]
+
+COOKIE_FILE = next(
+    (p for p in _COOKIE_CANDIDATES if p and os.path.exists(p) and os.path.getsize(p) > 100),
+    None,
+)
+
+if COOKIE_FILE:
+    print(f"[Startup] Using YouTube cookies from: {COOKIE_FILE}")
     YT_EXTRA_ARGS = ["--cookies", COOKIE_FILE]
+else:
+    print("[Startup] WARNING: No cookies.txt found — YouTube requests will run unauthenticated "
+          "and are more likely to hit 429/bot-check errors.")
+    YT_EXTRA_ARGS = []
 
 # Use iOS and Android mobile clients without overriding with desktop user agents
 YT_CLIENT_ARGS = [
@@ -188,7 +204,7 @@ def transcribe_fast_groq(youtube_url: str, job_dir: str) -> str:
 
     res = subprocess.run(cmd, capture_output=True, text=True)
     if res.returncode != 0:
-        # Fallback: try iOS standalone without cookies
+        # Fallback: try iOS standalone, but still pass cookies if we have them
         fallback_cmd = [
             "yt-dlp",
             "-f", "140/ba/b",
@@ -196,8 +212,7 @@ def transcribe_fast_groq(youtube_url: str, job_dir: str) -> str:
             "--audio-format", "mp3",
             "--extractor-args", "youtube:player_client=ios",
             "-o", temp_audio_file,
-            youtube_url,
-        ]
+        ] + YT_EXTRA_ARGS + [youtube_url]
         res_fb = subprocess.run(fallback_cmd, capture_output=True, text=True)
         if res_fb.returncode != 0:
             err_msg = res_fb.stderr or res.stderr or "Unknown download error"
