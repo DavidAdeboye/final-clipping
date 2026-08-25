@@ -19,6 +19,7 @@ WORKDIR /app
 
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --upgrade yt-dlp
 
 ADD https://pypi.org/pypi/yt-dlp/json /tmp/ytdlp_version.json
 RUN pip install --no-cache-dir -U "yt-dlp[default]"

@@ -14,6 +14,7 @@ import urllib.parse
 from typing import List, Tuple, Dict, Optional, Callable
 import html
 import xml.etree.ElementTree as ET
+
 # Limit thread concurrency to avoid OOM on constrained server tiers
 os.environ["OMP_NUM_THREADS"] = "1"
 os.environ["OPENBLAS_NUM_THREADS"] = "1"
@@ -31,7 +32,6 @@ from mediapipe.tasks import python as mp_python
 from mediapipe.tasks.python import vision as mp_vision
 from google import genai
 from google.genai import types
-from youtube_transcript_api import YouTubeTranscriptApi
 
 MAX_ALLOWED_HOURS = 5
 MAX_ALLOWED_SECONDS = MAX_ALLOWED_HOURS * 3600
@@ -144,11 +144,11 @@ def get_video_duration(video_url: str) -> int:
         pass
     return 600
 
+
 def extract_captions(video_url: str, job_dir: str) -> str:
     print("Fetching video captions via YouTube InnerTube API...")
     video_id = get_video_id(video_url)
 
-    # 1. Query YouTube InnerTube Android endpoint for playback metadata & captions
     innertube_url = "https://www.youtube.com/youtubei/v1/player"
     payload = json.dumps({
         "context": {
@@ -180,7 +180,6 @@ def extract_captions(video_url: str, job_dir: str) -> str:
     except Exception as e:
         raise RuntimeError(f"Failed to query YouTube API: {e}")
 
-    # 2. Locate caption tracks inside response
     caption_tracks = (
         data.get("captions", {})
         .get("playerCaptionsTracklistRenderer", {})
@@ -190,7 +189,6 @@ def extract_captions(video_url: str, job_dir: str) -> str:
     if not caption_tracks:
         raise RuntimeError("No captions available for this video.")
 
-    # Prioritize English tracks
     target_url = None
     for track in caption_tracks:
         lang = track.get("languageCode", "").lower()
@@ -201,7 +199,6 @@ def extract_captions(video_url: str, job_dir: str) -> str:
     if not target_url:
         target_url = caption_tracks[0].get("baseUrl")
 
-    # Request caption transcript in JSON3 format
     if "fmt=" not in target_url:
         target_url += "&fmt=json3"
 
@@ -223,7 +220,6 @@ def extract_captions(video_url: str, job_dir: str) -> str:
                 if utf8 and utf8 != "\n":
                     lines.append(utf8)
     except Exception:
-        # Fallback XML parsing if response was returned as standard timedtext XML
         root = ET.fromstring(cap_data)
         for text_el in root.findall(".//text"):
             if text_el.text:
@@ -237,6 +233,7 @@ def extract_captions(video_url: str, job_dir: str) -> str:
 
     print(f"Successfully retrieved {len(full_transcript)} characters of transcript.")
     return full_transcript
+
 
 def find_viral_moments_direct(video_url: str) -> HighlightResponse:
     print("Analyzing YouTube video directly with Gemini for transcript & highlights...")
@@ -280,6 +277,7 @@ def find_viral_moments_direct(video_url: str) -> HighlightResponse:
             continue
 
     raise RuntimeError("Failed to generate highlights with Gemini models.")
+
 
 def remove_silence(
     input_path: str,
@@ -494,73 +492,50 @@ def render_gimbal_tracked_video(
 def resolve_direct_video_stream(video_url: str) -> Optional[str]:
     video_id = get_video_id(video_url)
 
-    # 1. Fetch direct stream URLs via Cloudflare Worker using YouTube Android Player API
-    worker_url = "https://yt-proxy.thatguyjude.workers.dev/?url=" + urllib.parse.quote(
-        "https://www.youtube.com/youtubei/v1/player"
-    )
-    
-    payload = json.dumps({
-        "context": {
-            "client": {
-                "clientName": "ANDROID_TESTSUITE",
-                "clientVersion": "1.9",
-                "androidSdkVersion": 30,
-                "hl": "en",
-                "gl": "US"
-            }
-        },
-        "videoId": video_id
-    }).encode("utf-8")
-
-    try:
-        req = urllib.request.Request(
-            worker_url,
-            data=payload,
-            headers={
-                "Content-Type": "application/json",
-                "User-Agent": "com.google.android.youtube/19.09.37 (Linux; U; Android 11; en_US)"
-            }
-        )
-        with urllib.request.urlopen(req, timeout=15) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
-            formats = data.get("streamingData", {}).get("formats", []) + data.get("streamingData", {}).get("adaptiveFormats", [])
-            for f in formats:
-                # Find direct MP4 stream with audio and video
-                if "url" in f and "video/mp4" in f.get("mimeType", "") and f.get("height", 0) >= 360:
-                    stream_url = f["url"]
-                    print(f"Direct stream URL acquired via Cloudflare Worker bridge ({f.get('qualityLabel', '720p')})")
-                    return stream_url
-    except Exception as e:
-        print(f"Worker stream bridge notice: {e}")
-
-    # 2. Query public streaming instances
-    cobalt_instances = [
-        "https://cobalt-api.kwiatekmiki.pl/",
-        "https://co.eepy.today/",
+    # 1. Query stable Invidious instances for direct video streams
+    invidious_instances = [
+        "https://inv.tux.pizza",
+        "https://invidious.nerdvpn.de",
+        "https://yt.drgnz.club",
+        "https://invidious.projectsegfau.lt"
     ]
-    cobalt_payload = json.dumps({
-        "url": video_url,
-        "videoQuality": "720",
-        "youtubeVideoCodec": "h264",
-        "downloadMode": "auto"
-    }).encode("utf-8")
 
-    for c_url in cobalt_instances:
+    for base in invidious_instances:
         try:
+            api_url = f"{base}/api/v1/videos/{video_id}"
             req = urllib.request.Request(
-                c_url,
-                data=cobalt_payload,
-                headers={
-                    "Accept": "application/json",
-                    "Content-Type": "application/json",
-                    "User-Agent": _BROWSER_UA
-                }
+                api_url,
+                headers={"User-Agent": _BROWSER_UA}
             )
-            with urllib.request.urlopen(req, timeout=10) as resp:
+            with urllib.request.urlopen(req, timeout=8) as resp:
                 data = json.loads(resp.read().decode("utf-8"))
-                stream_url = data.get("url")
-                if stream_url:
-                    return stream_url
+                formats = data.get("formatStreams", [])
+                for f in formats:
+                    if f.get("container") == "mp4" and "url" in f:
+                        print(f"Acquired direct stream via Invidious instance: {base}")
+                        return f["url"]
+        except Exception:
+            continue
+
+    # 2. Query Piped instances
+    piped_instances = [
+        "https://pipedapi.kavin.rocks",
+        "https://api.piped.privacydev.net"
+    ]
+
+    for base in piped_instances:
+        try:
+            api_url = f"{base}/streams/{video_id}"
+            req = urllib.request.Request(
+                api_url,
+                headers={"User-Agent": _BROWSER_UA}
+            )
+            with urllib.request.urlopen(req, timeout=8) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+                for s in data.get("videoStreams", []):
+                    if s.get("format") == "MPEG_4" and not s.get("videoOnly", False):
+                        print(f"Acquired direct stream via Piped instance: {base}")
+                        return s.get("url")
         except Exception:
             continue
 
@@ -574,25 +549,9 @@ def download_clip_with_ytdlp(
     output_path: str,
     cookies_base64: str = "",
 ) -> bool:
-    """Download only the requested section, letting yt-dlp handle YouTube changes."""
     section = f"*{start_seconds}-{end_seconds}"
     cookie_path = None
-    base_command = [
-        sys.executable, "-m", "yt_dlp",
-        "--no-playlist",
-        "--no-warnings",
-        "--retries", "3",
-        "--fragment-retries", "3",
-        "--retry-sleep", "fragment:exp=1:4",
-        "--download-sections", section,
-        "--force-keyframes-at-cuts",
-        "--merge-output-format", "mp4",
-        "--format", "bv*[ext=mp4]+ba[ext=m4a]/b[ext=mp4]/best",
-        "--output", output_path,
-    ]
 
-    # Render and similar datacenter IPs are frequently challenged by YouTube.
-    # Store a Netscape cookies.txt file as a base64-encoded environment secret.
     encoded_cookies = (cookies_base64 or os.getenv("YOUTUBE_COOKIES_BASE64", "")).strip()
     if encoded_cookies:
         cookie_path = output_path + ".cookies.txt"
@@ -601,28 +560,40 @@ def download_clip_with_ytdlp(
             with open(cookie_path, "wb") as cookie_file:
                 cookie_file.write(cookie_data)
             os.chmod(cookie_path, 0o600)
-            base_command.extend(["--cookies", cookie_path])
         except (ValueError, OSError) as exc:
             print(f"YOUTUBE_COOKIES_BASE64 configuration notice: {exc}")
             cookie_path = None
 
-    youtube_proxy = os.getenv("YOUTUBE_PROXY", "").strip()
-    if youtube_proxy:
-        base_command.extend(["--proxy", youtube_proxy])
-
-    # Different public videos remain available through different official
-    # YouTube clients. Try a small set before falling back to public bridges.
-    client_attempts = (
-        None,
+    client_strategies = [
+        "youtube:player_client=ios,android",
+        "youtube:player_client=tv",
         "youtube:player_client=android_vr",
-        "youtube:player_client=web_creator",
-    )
+    ]
 
     try:
-        for attempt_number, extractor_args in enumerate(client_attempts, start=1):
-            command = list(base_command)
-            if extractor_args:
-                command.extend(["--extractor-args", extractor_args])
+        for attempt_idx, client_arg in enumerate(client_strategies, start=1):
+            command = [
+                sys.executable, "-m", "yt_dlp",
+                "--no-playlist",
+                "--no-warnings",
+                "--retries", "3",
+                "--fragment-retries", "3",
+                "--extractor-args", client_arg,
+                "--user-agent", _BROWSER_UA,
+                "--download-sections", section,
+                "--force-keyframes-at-cuts",
+                "--merge-output-format", "mp4",
+                "--format", "bv*[ext=mp4]+ba[ext=m4a]/b[ext=mp4]/best",
+                "--output", output_path,
+            ]
+
+            if cookie_path and os.path.exists(cookie_path):
+                command.extend(["--cookies", cookie_path])
+
+            youtube_proxy = os.getenv("YOUTUBE_PROXY", "").strip()
+            if youtube_proxy:
+                command.extend(["--proxy", youtube_proxy])
+
             command.append(video_url)
 
             try:
@@ -630,7 +601,7 @@ def download_clip_with_ytdlp(
                 if os.path.isfile(output_path) and os.path.getsize(output_path) > 0:
                     return True
             except (OSError, subprocess.CalledProcessError):
-                print(f"yt-dlp download attempt {attempt_number} failed")
+                print(f"yt-dlp attempt {attempt_idx} failed with {client_arg}")
 
             if os.path.exists(output_path):
                 os.remove(output_path)
@@ -733,7 +704,6 @@ def run_pipeline(
     if duration > MAX_ALLOWED_SECONDS:
         raise ValueError(f"Video exceeds the {MAX_ALLOWED_HOURS} hour limit.")
 
-    # Single multimodal API call: Gemini fetches video transcript & extracts viral segments
     highlight_data = find_viral_moments_direct(video_url)
 
     for idx, clip in enumerate(highlight_data.clips, start=1):
