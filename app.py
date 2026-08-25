@@ -5,6 +5,7 @@ import random
 import re
 import shutil
 import subprocess
+import sys
 import time
 import uuid
 import urllib.request
@@ -565,6 +566,36 @@ def resolve_direct_video_stream(video_url: str) -> Optional[str]:
     return None
 
 
+def download_clip_with_ytdlp(
+    video_url: str,
+    start_seconds: int,
+    end_seconds: int,
+    output_path: str,
+) -> bool:
+    """Download only the requested section, letting yt-dlp handle YouTube changes."""
+    section = f"*{start_seconds}-{end_seconds}"
+    command = [
+        sys.executable, "-m", "yt_dlp",
+        "--no-playlist",
+        "--no-warnings",
+        "--download-sections", section,
+        "--force-keyframes-at-cuts",
+        "--merge-output-format", "mp4",
+        "--format", "bv*[ext=mp4]+ba[ext=m4a]/b[ext=mp4]/best",
+        "--output", output_path,
+        video_url,
+    ]
+
+    try:
+        subprocess.run(command, check=True)
+        return os.path.isfile(output_path) and os.path.getsize(output_path) > 0
+    except (OSError, subprocess.CalledProcessError) as exc:
+        print(f"yt-dlp clip download notice: {exc}")
+        if os.path.exists(output_path):
+            os.remove(output_path)
+        return False
+
+
 def process_clip(
     video_url: str,
     clip: ViralClip,
@@ -582,10 +613,21 @@ def process_clip(
     print(f"\nProcessing Clip {index}: {clip.title}")
     print(f"Time: {clip.start_seconds}s to {clip.end_seconds}s")
 
-    stream_url = resolve_direct_video_stream(video_url)
     duration = max(5, clip.end_seconds - clip.start_seconds)
 
-    if stream_url:
+    downloaded = download_clip_with_ytdlp(
+        video_url,
+        clip.start_seconds,
+        clip.start_seconds + duration,
+        temp_raw,
+    )
+
+    if not downloaded:
+        stream_url = resolve_direct_video_stream(video_url)
+    else:
+        stream_url = None
+
+    if not downloaded and stream_url:
         ffmpeg_dl = [
             "ffmpeg", "-y",
             "-ss", str(clip.start_seconds),
@@ -596,8 +638,12 @@ def process_clip(
             temp_raw
         ]
         subprocess.run(ffmpeg_dl, check=True)
-    else:
-        raise RuntimeError("Unable to acquire direct video stream for slicing.")
+        downloaded = os.path.isfile(temp_raw) and os.path.getsize(temp_raw) > 0
+
+    if not downloaded:
+        raise RuntimeError(
+            "Unable to download the requested YouTube clip with yt-dlp or a fallback stream."
+        )
 
     try:
         paced_file = remove_silence(temp_raw, temp_paced, min_silence_len=0.6)
