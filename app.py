@@ -412,31 +412,9 @@ def render_gimbal_tracked_video(
     crop_h_split = int(height * SPLIT_ZOOM)
     crop_w_split = int(crop_h_split * (out_w / panel_h))
 
-    # Pipe directly from OpenCV into single FFmpeg pass with strictly bounded threads
-    ffmpeg_pipe_cmd = [
-        "ffmpeg", "-y",
-        "-f", "rawvideo",
-        "-vcodec", "rawvideo",
-        "-s", f"{out_w}x{out_h}",
-        "-pix_fmt", "bgr24",
-        "-r", str(fps),
-        "-i", "-",
-        "-i", input_path,
-        "-c:v", "libx264",
-        "-preset", "veryfast",
-        "-crf", "19",
-        "-threads", "1",
-        "-x264-params", "threads=1:lookahead-threads=1",
-        "-pix_fmt", "yuv420p",
-        "-movflags", "+faststart",
-        "-c:a", "aac",
-        "-map", "0:v:0",
-        "-map", "1:a:0",
-        "-shortest",
-        output_path
-    ]
-
-    pipe_proc = subprocess.Popen(ffmpeg_pipe_cmd, stdin=subprocess.PIPE)
+    temp_processed_video = os.path.join(job_dir, f"temp_visual_{uuid.uuid4().hex[:6]}.mp4")
+    fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+    out_writer = cv2.VideoWriter(temp_processed_video, fourcc, fps, (out_w, out_h))
 
     default_center_x = float(width // 2)
     default_left_x = float(width * 0.28)
@@ -462,7 +440,7 @@ def render_gimbal_tracked_video(
 
             frame_count += 1
 
-            # Downscaled low-res preview frame for MediaPipe keeping RAM footprint minimal
+            # Downsample preview frame for MediaPipe to minimize memory
             small_w = 480
             small_h = int(height * (small_w / width))
             small_frame = cv2.resize(frame, (small_w, small_h), interpolation=cv2.INTER_NEAREST)
@@ -514,7 +492,7 @@ def render_gimbal_tracked_video(
                 solo_panel = frame[0:height, crop_sx:crop_sx + crop_w_cut]
                 canvas = cv2.resize(solo_panel, (out_w, out_h))
 
-            pipe_proc.stdin.write(canvas.tobytes())
+            out_writer.write(canvas)
 
             if frame_count % 120 == 0:
                 gc.collect()
@@ -522,11 +500,32 @@ def render_gimbal_tracked_video(
     finally:
         detector.close()
         cap.release()
-        if pipe_proc.stdin:
-            pipe_proc.stdin.close()
-        pipe_proc.wait()
+        out_writer.release()
         gc.collect()
 
+    try:
+        # Merge processed video with original audio and write the web-optimized moov atom
+        merge_cmd = [
+            "ffmpeg", "-y",
+            "-i", temp_processed_video,
+            "-i", input_path,
+            "-c:v", "libx264",
+            "-preset", "ultrafast",
+            "-crf", "22",
+            "-threads", "1",
+            "-x264-params", "threads=1:lookahead-threads=1",
+            "-pix_fmt", "yuv420p",
+            "-movflags", "+faststart",
+            "-c:a", "aac",
+            "-map", "0:v:0",
+            "-map", "1:a:0",
+            "-shortest",
+            output_path
+        ]
+        subprocess.run(merge_cmd, check=True)
+    finally:
+        if os.path.exists(temp_processed_video):
+            os.remove(temp_processed_video)
 
 def resolve_direct_video_stream(video_url: str) -> Optional[str]:
     video_id = get_video_id(video_url)
