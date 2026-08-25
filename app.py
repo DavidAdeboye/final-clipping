@@ -307,7 +307,7 @@ def remove_silence(
     pad: float = 0.15,
 ) -> str:
     detect_cmd = [
-        "ffmpeg", "-i", input_path,
+        "ffmpeg", "-threads", "1", "-i", input_path,
         "-af", f"silencedetect=noise={noise_floor_db}:d={min_silence_len}",
         "-f", "null", "-"
     ]
@@ -353,10 +353,11 @@ def remove_silence(
     filter_complex += f"{concat_inputs}concat=n={len(keep_ranges)}:v=1:a=1[outv][outa]"
 
     ffmpeg_cmd = [
-        "ffmpeg", "-y", "-i", input_path,
+        "ffmpeg", "-y", "-threads", "1", "-i", input_path,
         "-filter_complex", filter_complex,
         "-map", "[outv]", "-map", "[outa]",
         "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
+        "-x264-params", "threads=1:lookahead-threads=1",
         "-c:a", "aac", output_path
     ]
     subprocess.run(ffmpeg_cmd, check=True)
@@ -403,7 +404,6 @@ def render_gimbal_tracked_video(
     width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
 
-    # Keep Full 1080p Resolution
     out_w, out_h = OUTPUT_DIMENSIONS.get(aspect_ratio, OUTPUT_DIMENSIONS["9:16"])
     panel_h = (out_h - 4) // 2
     crop_w_cut = int(height * (out_w / out_h))
@@ -412,9 +412,31 @@ def render_gimbal_tracked_video(
     crop_h_split = int(height * SPLIT_ZOOM)
     crop_w_split = int(crop_h_split * (out_w / panel_h))
 
-    temp_processed_video = os.path.join(job_dir, "temp_visual.mp4")
-    fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-    out_writer = cv2.VideoWriter(temp_processed_video, fourcc, fps, (out_w, out_h))
+    # Pipe directly from OpenCV into single FFmpeg pass with strictly bounded threads
+    ffmpeg_pipe_cmd = [
+        "ffmpeg", "-y",
+        "-f", "rawvideo",
+        "-vcodec", "rawvideo",
+        "-s", f"{out_w}x{out_h}",
+        "-pix_fmt", "bgr24",
+        "-r", str(fps),
+        "-i", "-",
+        "-i", input_path,
+        "-c:v", "libx264",
+        "-preset", "veryfast",
+        "-crf", "19",
+        "-threads", "1",
+        "-x264-params", "threads=1:lookahead-threads=1",
+        "-pix_fmt", "yuv420p",
+        "-movflags", "+faststart",
+        "-c:a", "aac",
+        "-map", "0:v:0",
+        "-map", "1:a:0",
+        "-shortest",
+        output_path
+    ]
+
+    pipe_proc = subprocess.Popen(ffmpeg_pipe_cmd, stdin=subprocess.PIPE)
 
     default_center_x = float(width // 2)
     default_left_x = float(width * 0.28)
@@ -440,7 +462,7 @@ def render_gimbal_tracked_video(
 
             frame_count += 1
 
-            # Downsample lightweight preview frame for MediaPipe to save ~350MB RAM
+            # Downscaled low-res preview frame for MediaPipe keeping RAM footprint minimal
             small_w = 480
             small_h = int(height * (small_w / width))
             small_frame = cv2.resize(frame, (small_w, small_h), interpolation=cv2.INTER_NEAREST)
@@ -492,37 +514,18 @@ def render_gimbal_tracked_video(
                 solo_panel = frame[0:height, crop_sx:crop_sx + crop_w_cut]
                 canvas = cv2.resize(solo_panel, (out_w, out_h))
 
-            out_writer.write(canvas)
+            pipe_proc.stdin.write(canvas.tobytes())
 
-            # Periodic garbage collection every 120 frames to stay under 512MB RAM
             if frame_count % 120 == 0:
                 gc.collect()
 
     finally:
         detector.close()
         cap.release()
-        out_writer.release()
+        if pipe_proc.stdin:
+            pipe_proc.stdin.close()
+        pipe_proc.wait()
         gc.collect()
-
-    try:
-        merge_cmd = [
-            "ffmpeg", "-y",
-            "-threads", "2",
-            "-i", temp_processed_video,
-            "-i", input_path,
-            "-c:v", "libx264", "-preset", "veryfast", "-crf", "19",
-            "-max_muxing_queue_size", "1024",
-            "-pix_fmt", "yuv420p",
-            "-movflags", "+faststart",
-            "-c:a", "aac",
-            "-map", "0:v:0",
-            "-map", "1:a:0",
-            output_path
-        ]
-        subprocess.run(merge_cmd, check=True)
-    finally:
-        if os.path.exists(temp_processed_video):
-            os.remove(temp_processed_video)
 
 
 def resolve_direct_video_stream(video_url: str) -> Optional[str]:
@@ -587,7 +590,6 @@ def download_clip_with_ytdlp(
     section = f"*{start_seconds}-{end_seconds}"
     cookie_path = None
 
-    # Support single custom cookie from UI or rotated pool from environment
     env_pool = os.getenv("YOUTUBE_COOKIES_BASE64", "").strip()
     candidate_cookies = []
 
@@ -692,11 +694,12 @@ def process_clip(
     if not downloaded and stream_url:
         ffmpeg_dl = [
             "ffmpeg", "-y",
-            "-threads", "2",
+            "-threads", "1",
             "-ss", str(clip.start_seconds),
             "-i", stream_url,
             "-t", str(duration),
             "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
+            "-x264-params", "threads=1:lookahead-threads=1",
             "-c:a", "aac",
             temp_raw
         ]
@@ -713,10 +716,11 @@ def process_clip(
         if aspect_ratio == "16:9":
             ffmpeg_cmd = [
                 "ffmpeg", "-y",
-                "-threads", "2",
+                "-threads", "1",
                 "-i", paced_file,
                 "-vf", "scale=1920:1080,setsar=1",
                 "-c:v", "libx264", "-preset", "veryfast", "-crf", "19",
+                "-x264-params", "threads=1:lookahead-threads=1",
                 "-pix_fmt", "yuv420p",
                 "-movflags", "+faststart",
                 "-c:a", "aac", final_output
