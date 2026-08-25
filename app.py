@@ -11,6 +11,7 @@ import time
 import uuid
 import urllib.request
 import urllib.parse
+import gc
 from typing import List, Tuple, Dict, Optional, Callable
 import html
 import xml.etree.ElementTree as ET
@@ -402,6 +403,7 @@ def render_gimbal_tracked_video(
     width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
 
+    # Keep Full 1080p Resolution
     out_w, out_h = OUTPUT_DIMENSIONS.get(aspect_ratio, OUTPUT_DIMENSIONS["9:16"])
     panel_h = (out_h - 4) // 2
     crop_w_cut = int(height * (out_w / out_h))
@@ -428,6 +430,7 @@ def render_gimbal_tracked_video(
     alpha = 0.10
 
     MIN_SPLIT_GAP = 90
+    frame_count = 0
 
     try:
         while cap.isOpened():
@@ -435,8 +438,14 @@ def render_gimbal_tracked_video(
             if not ret or frame is None:
                 break
 
-            rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            mp_img = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
+            frame_count += 1
+
+            # Downsample lightweight preview frame for MediaPipe to save ~350MB RAM
+            small_w = 480
+            small_h = int(height * (small_w / width))
+            small_frame = cv2.resize(frame, (small_w, small_h), interpolation=cv2.INTER_NEAREST)
+            rgb_small = cv2.cvtColor(small_frame, cv2.COLOR_BGR2RGB)
+            mp_img = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb_small)
             res = detector.detect(mp_img)
 
             face_points = []
@@ -484,17 +493,25 @@ def render_gimbal_tracked_video(
                 canvas = cv2.resize(solo_panel, (out_w, out_h))
 
             out_writer.write(canvas)
+
+            # Periodic garbage collection every 120 frames to stay under 512MB RAM
+            if frame_count % 120 == 0:
+                gc.collect()
+
     finally:
         detector.close()
         cap.release()
         out_writer.release()
+        gc.collect()
 
     try:
         merge_cmd = [
             "ffmpeg", "-y",
+            "-threads", "2",
             "-i", temp_processed_video,
             "-i", input_path,
-            "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
+            "-c:v", "libx264", "-preset", "veryfast", "-crf", "19",
+            "-max_muxing_queue_size", "1024",
             "-pix_fmt", "yuv420p",
             "-movflags", "+faststart",
             "-c:a", "aac",
@@ -570,11 +587,21 @@ def download_clip_with_ytdlp(
     section = f"*{start_seconds}-{end_seconds}"
     cookie_path = None
 
-    encoded_cookies = (cookies_base64 or os.getenv("YOUTUBE_COOKIES_BASE64", "")).strip()
-    if encoded_cookies:
+    # Support single custom cookie from UI or rotated pool from environment
+    env_pool = os.getenv("YOUTUBE_COOKIES_BASE64", "").strip()
+    candidate_cookies = []
+
+    if cookies_base64.strip():
+        candidate_cookies = [cookies_base64.strip()]
+    elif env_pool:
+        candidate_cookies = [c.strip() for c in re.split(r'[\n,]+', env_pool) if c.strip()]
+
+    selected_b64 = random.choice(candidate_cookies) if candidate_cookies else ""
+
+    if selected_b64:
         cookie_path = output_path + ".cookies.txt"
         try:
-            cookie_data = base64.b64decode(encoded_cookies, validate=True)
+            cookie_data = base64.b64decode(selected_b64, validate=True)
             with open(cookie_path, "wb") as cookie_file:
                 cookie_file.write(cookie_data)
             os.chmod(cookie_path, 0o600)
@@ -665,6 +692,7 @@ def process_clip(
     if not downloaded and stream_url:
         ffmpeg_dl = [
             "ffmpeg", "-y",
+            "-threads", "2",
             "-ss", str(clip.start_seconds),
             "-i", stream_url,
             "-t", str(duration),
@@ -684,9 +712,11 @@ def process_clip(
         paced_file = remove_silence(temp_raw, temp_paced, min_silence_len=0.6)
         if aspect_ratio == "16:9":
             ffmpeg_cmd = [
-                "ffmpeg", "-y", "-i", paced_file,
+                "ffmpeg", "-y",
+                "-threads", "2",
+                "-i", paced_file,
                 "-vf", "scale=1920:1080,setsar=1",
-                "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
+                "-c:v", "libx264", "-preset", "veryfast", "-crf", "19",
                 "-pix_fmt", "yuv420p",
                 "-movflags", "+faststart",
                 "-c:a", "aac", final_output
