@@ -7,30 +7,30 @@
 <link rel="icon" type="image/svg+xml" href="/favicon.ico">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Plus+Jakarta+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet">
 <style>
 :root {
-  --bg: #0a0c10;
-  --panel: #12151b;
-  --panel-raised: #191d25;
-  --border: #242932;
+  --bg: #101210;
+  --panel: #171a17;
+  --panel-raised: #1d211d;
+  --border: #2a302a;
   --border-strong: #343b48;
-  --text-primary: #edeef1;
+  --text-primary: #f0f2ec;
   --text-muted: #8b93a2;
   --text-dim: #565d6b;
 
   --tally: #ff3b44;
   --tally-dim: rgba(255, 59, 68, 0.14);
-  --signal: #4c8dff;
-  --signal-dim: rgba(76, 141, 255, 0.14);
+  --signal: #c7f36a;
+  --signal-dim: rgba(199, 243, 106, 0.12);
   --amber: #ffb020;
   --ok: #57c278;
 
-  --radius: 14px;
-  --radius-sm: 9px;
-  --font-display: 'Space Grotesk', system-ui, sans-serif;
-  --font-sans: 'Plus Jakarta Sans', system-ui, sans-serif;
-  --font-mono: 'JetBrains Mono', monospace;
+  --radius: 6px;
+  --radius-sm: 4px;
+  --font-display: 'DM Sans', system-ui, sans-serif;
+  --font-sans: 'DM Sans', system-ui, sans-serif;
+  --font-mono: 'DM Mono', monospace;
 }
 
 * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -40,9 +40,7 @@ body {
   color: var(--text-primary);
   font-family: var(--font-sans);
   overflow-x: hidden;
-  background-image:
-    radial-gradient(ellipse 70% 45% at 15% -10%, rgba(76, 141, 255, 0.05), transparent),
-    radial-gradient(ellipse 60% 40% at 100% 10%, rgba(255, 59, 68, 0.04), transparent);
+  background-image: linear-gradient(180deg, #151815 0%, var(--bg) 240px);
 }
 :focus-visible { outline: 2px solid var(--signal); outline-offset: 2px; border-radius: 4px; }
 
@@ -56,16 +54,15 @@ body {
   gap: 16px;
   padding: 14px 28px;
   border-bottom: 1px solid var(--border);
-  background: rgba(10, 12, 16, 0.88);
-  backdrop-filter: blur(14px);
+  background: var(--bg);
 }
 .brand { display: flex; align-items: center; gap: 10px; min-width: 0; }
 .brand-mark {
   width: 34px;
   height: 34px;
   flex-shrink: 0;
-  border-radius: 8px;
-  background: var(--panel-raised);
+  border-radius: 4px;
+  background: var(--signal);
   border: 1px solid var(--border-strong);
   display: grid;
   place-items: center;
@@ -81,7 +78,7 @@ body {
   padding: 3px;
   background: var(--panel);
   border: 1px solid var(--border);
-  border-radius: 999px;
+  border-radius: 4px;
   flex-shrink: 0;
 }
 .tab-btn {
@@ -90,11 +87,11 @@ body {
   color: var(--text-muted);
   font: 600 12px var(--font-sans);
   padding: 8px 16px;
-  border-radius: 999px;
+  border-radius: 3px;
   cursor: pointer;
   transition: background 0.15s ease, color 0.15s ease;
 }
-.tab-btn.active { background: var(--panel-raised); color: var(--text-primary); box-shadow: inset 0 0 0 1px var(--border-strong); }
+.tab-btn.active { background: var(--signal); color: #11150f; box-shadow: none; }
 .tab-btn:hover:not(.active) { color: var(--text-primary); }
 
 .engine-pill {
@@ -102,7 +99,7 @@ body {
   align-items: center;
   gap: 7px;
   padding: 7px 12px;
-  border-radius: 999px;
+  border-radius: 3px;
   border: 1px solid var(--border);
   background: var(--panel);
   font: 600 10px var(--font-mono);
@@ -110,9 +107,9 @@ body {
   flex-shrink: 0;
   letter-spacing: 0.06em;
 }
-.engine-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--ok); box-shadow: 0 0 8px var(--ok); }
+.engine-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--ok); }
 
-.content { max-width: 1160px; margin: 0 auto; padding: 32px 28px 80px; }
+.content { max-width: 1240px; margin: 0 auto; padding: 40px 28px 80px; }
 .view-section { display: none; }
 .view-section.active { display: block; }
 
@@ -218,7 +215,7 @@ body {
 }
 .btn-secondary:hover { border-color: var(--signal); }
 
-.card { background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; margin-bottom: 20px; }
+.card { background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius-sm); overflow: hidden; margin-bottom: 20px; }
 .card-head { padding: 15px 20px; border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center; }
 .card-title { font: 600 13px var(--font-display); }
 .badge { font: 700 10px var(--font-mono); padding: 3px 7px; border-radius: 4px; background: var(--panel-raised); color: var(--text-muted); border: 1px solid var(--border); }
@@ -307,7 +304,7 @@ body {
 .expiry-dot { width: 5px; height: 5px; border-radius: 50%; background: var(--amber); }
 .clip-info { display: flex; justify-content: space-between; align-items: center; margin-top: 10px; }
 .clip-title { font: 11px var(--font-mono); color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 140px; }
-.btn-download { background: var(--tally); color: #fff; font: 700 11px var(--font-sans); padding: 7px 13px; border-radius: 6px; text-decoration: none; }
+.btn-download { background: var(--signal); color: #11150f; font: 700 11px var(--font-sans); padding: 7px 13px; border-radius: 4px; text-decoration: none; }
 
 .projects-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(270px, 1fr)); gap: 16px; }
 .project-card {
