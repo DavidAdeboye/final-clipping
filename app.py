@@ -585,7 +585,6 @@ def resolve_direct_video_stream(video_url: str) -> Optional[str]:
 
     return None
 
-
 def download_clip_with_ytdlp(
     video_url: str,
     start_seconds: int,
@@ -612,12 +611,14 @@ def download_clip_with_ytdlp(
             cookie_data = base64.b64decode(selected_b64, validate=True)
             with open(cookie_path, "wb") as cookie_file:
                 cookie_file.write(cookie_data)
+                cookie_file.write(b"\n")
             os.chmod(cookie_path, 0o600)
         except (ValueError, OSError) as exc:
             print(f"Cookie notice: {exc}")
             cookie_path = None
 
     client_strategies = [
+        "youtube:player_client=ios,web",
         "youtube:player_client=mweb,web",
         "youtube:player_client=android",
         "youtube:player_client=tv",
@@ -662,7 +663,6 @@ def download_clip_with_ytdlp(
     finally:
         if cookie_path and os.path.exists(cookie_path):
             os.remove(cookie_path)
-
 
 def process_clip(
     video_url: str,
