@@ -356,7 +356,7 @@ def remove_silence(
         "ffmpeg", "-y", "-threads", "1", "-i", input_path,
         "-filter_complex", filter_complex,
         "-map", "[outv]", "-map", "[outa]",
-        "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
+        "-c:v", "libx264", "-preset", "ultrafast", "-crf", "22",
         "-x264-params", "threads=1:lookahead-threads=1",
         "-c:a", "aac", output_path
     ]
@@ -412,9 +412,31 @@ def render_gimbal_tracked_video(
     crop_h_split = int(height * SPLIT_ZOOM)
     crop_w_split = int(crop_h_split * (out_w / panel_h))
 
-    temp_processed_video = os.path.join(job_dir, f"temp_visual_{uuid.uuid4().hex[:6]}.mp4")
-    fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-    out_writer = cv2.VideoWriter(temp_processed_video, fourcc, fps, (out_w, out_h))
+    # Single-pass FFmpeg pipe: directly stream raw RGB frames to prevent double buffer OOM
+    ffmpeg_cmd = [
+        "ffmpeg", "-y",
+        "-f", "rawvideo",
+        "-vcodec", "rawvideo",
+        "-s", f"{out_w}x{out_h}",
+        "-pix_fmt", "bgr24",
+        "-r", str(fps),
+        "-i", "-",
+        "-i", input_path,
+        "-c:v", "libx264",
+        "-preset", "ultrafast",
+        "-crf", "22",
+        "-threads", "1",
+        "-x264-params", "threads=1:lookahead-threads=1:sliced-threads=0",
+        "-pix_fmt", "yuv420p",
+        "-movflags", "+faststart",
+        "-c:a", "aac",
+        "-map", "0:v:0",
+        "-map", "1:a:0?",
+        "-shortest",
+        output_path
+    ]
+
+    proc = subprocess.Popen(ffmpeg_cmd, stdin=subprocess.PIPE, stderr=subprocess.DEVNULL)
 
     default_center_x = float(width // 2)
     default_left_x = float(width * 0.28)
@@ -492,40 +514,25 @@ def render_gimbal_tracked_video(
                 solo_panel = frame[0:height, crop_sx:crop_sx + crop_w_cut]
                 canvas = cv2.resize(solo_panel, (out_w, out_h))
 
-            out_writer.write(canvas)
+            try:
+                proc.stdin.write(canvas.tobytes())
+            except (BrokenPipeError, IOError):
+                break
 
-            if frame_count % 120 == 0:
+            if frame_count % 100 == 0:
                 gc.collect()
 
     finally:
         detector.close()
         cap.release()
-        out_writer.release()
+        if proc.stdin:
+            try:
+                proc.stdin.close()
+            except Exception:
+                pass
+        proc.wait()
         gc.collect()
 
-    try:
-        # Merge processed video with original audio and write the web-optimized moov atom
-        merge_cmd = [
-            "ffmpeg", "-y",
-            "-i", temp_processed_video,
-            "-i", input_path,
-            "-c:v", "libx264",
-            "-preset", "ultrafast",
-            "-crf", "22",
-            "-threads", "1",
-            "-x264-params", "threads=1:lookahead-threads=1",
-            "-pix_fmt", "yuv420p",
-            "-movflags", "+faststart",
-            "-c:a", "aac",
-            "-map", "0:v:0",
-            "-map", "1:a:0",
-            "-shortest",
-            output_path
-        ]
-        subprocess.run(merge_cmd, check=True)
-    finally:
-        if os.path.exists(temp_processed_video):
-            os.remove(temp_processed_video)
 
 def resolve_direct_video_stream(video_url: str) -> Optional[str]:
     video_id = get_video_id(video_url)
@@ -697,7 +704,7 @@ def process_clip(
             "-ss", str(clip.start_seconds),
             "-i", stream_url,
             "-t", str(duration),
-            "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
+            "-c:v", "libx264", "-preset", "ultrafast", "-crf", "22",
             "-x264-params", "threads=1:lookahead-threads=1",
             "-c:a", "aac",
             temp_raw
@@ -718,7 +725,7 @@ def process_clip(
                 "-threads", "1",
                 "-i", paced_file,
                 "-vf", "scale=1920:1080,setsar=1",
-                "-c:v", "libx264", "-preset", "veryfast", "-crf", "19",
+                "-c:v", "libx264", "-preset", "ultrafast", "-crf", "22",
                 "-x264-params", "threads=1:lookahead-threads=1",
                 "-pix_fmt", "yuv420p",
                 "-movflags", "+faststart",
