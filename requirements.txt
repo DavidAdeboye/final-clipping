@@ -8,3 +8,6 @@ youtube-transcript-api
 google-genai
 yt-dlp
 python-multipart
+yt-dlp
+yt-dlp-get-pot
+bgutil-ytdlp-pot-provider

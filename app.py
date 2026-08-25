@@ -617,8 +617,10 @@ def download_clip_with_ytdlp(
             print(f"Cookie notice: {exc}")
             cookie_path = None
 
+    # PO Token & Web/iOS client strategies
     client_strategies = [
-        "youtube:player_client=ios,web",
+        "youtube:player_client=web;po_token=web+auto",
+        "youtube:player_client=ios;po_token=ios+auto",
         "youtube:player_client=mweb,web",
         "youtube:player_client=android",
         "youtube:player_client=tv",
