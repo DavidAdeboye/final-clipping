@@ -490,13 +490,52 @@ def render_gimbal_tracked_video(
 
 
 def resolve_direct_video_stream(video_url: str) -> Optional[str]:
-    # 1. Query Cobalt v10 API endpoints
+    video_id = get_video_id(video_url)
+
+    # 1. Fetch direct stream URLs via Cloudflare Worker using YouTube Android Player API
+    worker_url = "https://yt-proxy.thatguyjude.workers.dev/?url=" + urllib.parse.quote(
+        "https://www.youtube.com/youtubei/v1/player"
+    )
+    
+    payload = json.dumps({
+        "context": {
+            "client": {
+                "clientName": "ANDROID_TESTSUITE",
+                "clientVersion": "1.9",
+                "androidSdkVersion": 30,
+                "hl": "en",
+                "gl": "US"
+            }
+        },
+        "videoId": video_id
+    }).encode("utf-8")
+
+    try:
+        req = urllib.request.Request(
+            worker_url,
+            data=payload,
+            headers={
+                "Content-Type": "application/json",
+                "User-Agent": "com.google.android.youtube/19.09.37 (Linux; U; Android 11; en_US)"
+            }
+        )
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+            formats = data.get("streamingData", {}).get("formats", []) + data.get("streamingData", {}).get("adaptiveFormats", [])
+            for f in formats:
+                # Find direct MP4 stream with audio and video
+                if "url" in f and "video/mp4" in f.get("mimeType", "") and f.get("height", 0) >= 360:
+                    stream_url = f["url"]
+                    print(f"Direct stream URL acquired via Cloudflare Worker bridge ({f.get('qualityLabel', '720p')})")
+                    return stream_url
+    except Exception as e:
+        print(f"Worker stream bridge notice: {e}")
+
+    # 2. Query public streaming instances
     cobalt_instances = [
-        "https://api.cobalt.tools/",
         "https://cobalt-api.kwiatekmiki.pl/",
         "https://co.eepy.today/",
     ]
-
     cobalt_payload = json.dumps({
         "url": video_url,
         "videoQuality": "720",
@@ -515,28 +554,13 @@ def resolve_direct_video_stream(video_url: str) -> Optional[str]:
                     "User-Agent": _BROWSER_UA
                 }
             )
-            with urllib.request.urlopen(req, timeout=12) as resp:
+            with urllib.request.urlopen(req, timeout=10) as resp:
                 data = json.loads(resp.read().decode("utf-8"))
                 stream_url = data.get("url")
                 if stream_url:
-                    print(f"Direct stream URL acquired via {c_url}")
                     return stream_url
         except Exception:
             continue
-
-    # 2. Fallback: Query Invidious stream endpoints
-    try:
-        video_id = get_video_id(video_url)
-        invidious_api = f"https://api.invidious.io/api/v1/videos/{video_id}"
-        req = urllib.request.Request(invidious_api, headers={"User-Agent": _BROWSER_UA})
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
-            formats = data.get("formatStreams", [])
-            for f in formats:
-                if f.get("resolution") in ("720p", "480p", "360p"):
-                    return f.get("url")
-    except Exception:
-        pass
 
     return None
 
@@ -559,7 +583,7 @@ def process_clip(
     print(f"Time: {clip.start_seconds}s to {clip.end_seconds}s")
 
     stream_url = resolve_direct_video_stream(video_url)
-    duration = clip.end_seconds - clip.start_seconds
+    duration = max(5, clip.end_seconds - clip.start_seconds)
 
     if stream_url:
         ffmpeg_dl = [
@@ -573,17 +597,7 @@ def process_clip(
         ]
         subprocess.run(ffmpeg_dl, check=True)
     else:
-        # Fallback slice via yt-dlp with mobile client spoofing
-        slice_cmd = [
-            "yt-dlp",
-            "-f", "best[height<=720]/best",
-            "--extractor-args", "youtube:player_client=android,ios",
-            "--download-sections", f"*{clip.start_seconds}-{clip.end_seconds}",
-            "--merge-output-format", "mp4",
-            "--force-keyframes-at-cuts",
-            video_url, "-o", temp_raw
-        ]
-        subprocess.run(slice_cmd, check=True)
+        raise RuntimeError("Unable to acquire direct video stream for slicing.")
 
     try:
         paced_file = remove_silence(temp_raw, temp_paced, min_silence_len=0.6)
