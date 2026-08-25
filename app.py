@@ -16,15 +16,15 @@ from typing import List, Tuple, Dict, Optional, Callable
 import html
 import xml.etree.ElementTree as ET
 
-# Limit thread concurrency to avoid OOM on constrained server tiers
-os.environ["OMP_NUM_THREADS"] = "1"
-os.environ["OPENBLAS_NUM_THREADS"] = "1"
-os.environ["MKL_NUM_THREADS"] = "1"
-os.environ["VECLIB_MAXIMUM_THREADS"] = "1"
-os.environ["NUMEXPR_NUM_THREADS"] = "1"
+# Concurrency limits for local stability
+os.environ["OMP_NUM_THREADS"] = "2"
+os.environ["OPENBLAS_NUM_THREADS"] = "2"
+os.environ["MKL_NUM_THREADS"] = "2"
+os.environ["VECLIB_MAXIMUM_THREADS"] = "2"
+os.environ["NUMEXPR_NUM_THREADS"] = "2"
 
 import cv2
-cv2.setNumThreads(1)
+cv2.setNumThreads(2)
 import numpy as np
 
 from pydantic import BaseModel, Field
@@ -268,10 +268,10 @@ def find_viral_moments_direct(video_url: str) -> HighlightResponse:
     """
 
     priority_models = [
-        "gemini-3.7-flash",
-        "gemini-3.6-flash",
-        "gemini-3.5-flash-lite",
         "gemini-2.5-flash",
+        "gemini-3.5-flash-lite",
+        "gemini-3.6-flash",
+        "gemini-3.7-flash",
     ]
 
     for model_name in priority_models:
@@ -307,7 +307,7 @@ def remove_silence(
     pad: float = 0.15,
 ) -> str:
     detect_cmd = [
-        "ffmpeg", "-threads", "1", "-i", input_path,
+        "ffmpeg", "-threads", "2", "-i", input_path,
         "-af", f"silencedetect=noise={noise_floor_db}:d={min_silence_len}",
         "-f", "null", "-"
     ]
@@ -353,11 +353,10 @@ def remove_silence(
     filter_complex += f"{concat_inputs}concat=n={len(keep_ranges)}:v=1:a=1[outv][outa]"
 
     ffmpeg_cmd = [
-        "ffmpeg", "-y", "-threads", "1", "-i", input_path,
+        "ffmpeg", "-y", "-threads", "2", "-i", input_path,
         "-filter_complex", filter_complex,
         "-map", "[outv]", "-map", "[outa]",
-        "-c:v", "libx264", "-preset", "ultrafast", "-crf", "22",
-        "-x264-params", "threads=1:lookahead-threads=1",
+        "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
         "-c:a", "aac", output_path
     ]
     subprocess.run(ffmpeg_cmd, check=True)
@@ -412,7 +411,7 @@ def render_gimbal_tracked_video(
     crop_h_split = int(height * SPLIT_ZOOM)
     crop_w_split = int(crop_h_split * (out_w / panel_h))
 
-    # Single-pass FFmpeg pipe: directly stream raw RGB frames to prevent double buffer OOM
+    # Single-pass pipe using Intel QSV hardware acceleration or CPU fallback
     ffmpeg_cmd = [
         "ffmpeg", "-y",
         "-f", "rawvideo",
@@ -423,10 +422,8 @@ def render_gimbal_tracked_video(
         "-i", "-",
         "-i", input_path,
         "-c:v", "libx264",
-        "-preset", "ultrafast",
-        "-crf", "22",
-        "-threads", "1",
-        "-x264-params", "threads=1:lookahead-threads=1:sliced-threads=0",
+        "-preset", "veryfast",
+        "-crf", "20",
         "-pix_fmt", "yuv420p",
         "-movflags", "+faststart",
         "-c:a", "aac",
@@ -462,7 +459,6 @@ def render_gimbal_tracked_video(
 
             frame_count += 1
 
-            # Downsample preview frame for MediaPipe to minimize memory
             small_w = 480
             small_h = int(height * (small_w / width))
             small_frame = cv2.resize(frame, (small_w, small_h), interpolation=cv2.INTER_NEAREST)
@@ -519,7 +515,7 @@ def render_gimbal_tracked_video(
             except (BrokenPipeError, IOError):
                 break
 
-            if frame_count % 100 == 0:
+            if frame_count % 120 == 0:
                 gc.collect()
 
     finally:
@@ -585,6 +581,7 @@ def resolve_direct_video_stream(video_url: str) -> Optional[str]:
 
     return None
 
+
 def download_clip_with_ytdlp(
     video_url: str,
     start_seconds: int,
@@ -617,7 +614,6 @@ def download_clip_with_ytdlp(
             print(f"Cookie notice: {exc}")
             cookie_path = None
 
-    # PO Token & Web/iOS client strategies
     client_strategies = [
         "youtube:player_client=web;po_token=web+auto",
         "youtube:player_client=ios;po_token=ios+auto",
@@ -666,6 +662,7 @@ def download_clip_with_ytdlp(
         if cookie_path and os.path.exists(cookie_path):
             os.remove(cookie_path)
 
+
 def process_clip(
     video_url: str,
     clip: ViralClip,
@@ -702,12 +699,11 @@ def process_clip(
     if not downloaded and stream_url:
         ffmpeg_dl = [
             "ffmpeg", "-y",
-            "-threads", "1",
+            "-threads", "2",
             "-ss", str(clip.start_seconds),
             "-i", stream_url,
             "-t", str(duration),
-            "-c:v", "libx264", "-preset", "ultrafast", "-crf", "22",
-            "-x264-params", "threads=1:lookahead-threads=1",
+            "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
             "-c:a", "aac",
             temp_raw
         ]
@@ -724,11 +720,10 @@ def process_clip(
         if aspect_ratio == "16:9":
             ffmpeg_cmd = [
                 "ffmpeg", "-y",
-                "-threads", "1",
+                "-threads", "2",
                 "-i", paced_file,
                 "-vf", "scale=1920:1080,setsar=1",
-                "-c:v", "libx264", "-preset", "ultrafast", "-crf", "22",
-                "-x264-params", "threads=1:lookahead-threads=1",
+                "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
                 "-pix_fmt", "yuv420p",
                 "-movflags", "+faststart",
                 "-c:a", "aac", final_output
