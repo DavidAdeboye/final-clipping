@@ -238,12 +238,11 @@ def extract_captions(video_url: str, job_dir: str) -> str:
 def find_viral_moments_direct(video_url: str) -> HighlightResponse:
     print("Fetching transcript to ensure robust highlight analysis...")
 
-    # 1. Retrieve the text directly to bypass multimodal URL ingest blocks
     transcript_text = ""
     try:
         transcript_text = extract_captions(video_url, ".")
     except Exception as e:
-        print(f"Caption retrieval warning: {e}. Falling back to URL prompt.")
+        print(f"Caption retrieval notice: {e}. Falling back to URL prompt.")
 
     if transcript_text:
         content_payload = f"Here is the video transcript:\n\n{transcript_text[:25000]}"
@@ -297,6 +296,7 @@ def find_viral_moments_direct(video_url: str) -> HighlightResponse:
                 break
 
     raise RuntimeError("Failed to generate highlights with Gemini models.")
+
 
 def remove_silence(
     input_path: str,
@@ -511,49 +511,48 @@ def render_gimbal_tracked_video(
 def resolve_direct_video_stream(video_url: str) -> Optional[str]:
     video_id = get_video_id(video_url)
 
-    # 1. Query stable Invidious instances for direct video streams
-    invidious_instances = [
-        "https://inv.tux.pizza",
-        "https://invidious.nerdvpn.de",
-        "https://yt.drgnz.club",
-        "https://invidious.projectsegfau.lt"
+    invidious_endpoints = [
+        "https://invidious.asir.dev",
+        "https://inv.nadeko.net",
+        "https://invidious.jing.rocks",
+        "https://invidious.flokinet.to",
+        "https://yt.artemislena.eu",
     ]
 
-    for base in invidious_instances:
+    for base in invidious_endpoints:
         try:
             api_url = f"{base}/api/v1/videos/{video_id}"
             req = urllib.request.Request(
                 api_url,
-                headers={"User-Agent": _BROWSER_UA}
+                headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
             )
-            with urllib.request.urlopen(req, timeout=8) as resp:
+            with urllib.request.urlopen(req, timeout=7) as resp:
                 data = json.loads(resp.read().decode("utf-8"))
                 formats = data.get("formatStreams", [])
                 for f in formats:
                     if f.get("container") == "mp4" and "url" in f:
-                        print(f"Acquired direct stream via Invidious instance: {base}")
+                        print(f"Fallback stream resolved via {base}")
                         return f["url"]
         except Exception:
             continue
 
-    # 2. Query Piped instances
-    piped_instances = [
+    piped_endpoints = [
         "https://pipedapi.kavin.rocks",
+        "https://piped-api.garudalinux.org",
         "https://api.piped.privacydev.net"
     ]
-
-    for base in piped_instances:
+    for base in piped_endpoints:
         try:
             api_url = f"{base}/streams/{video_id}"
             req = urllib.request.Request(
                 api_url,
-                headers={"User-Agent": _BROWSER_UA}
+                headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
             )
-            with urllib.request.urlopen(req, timeout=8) as resp:
+            with urllib.request.urlopen(req, timeout=7) as resp:
                 data = json.loads(resp.read().decode("utf-8"))
                 for s in data.get("videoStreams", []):
                     if s.get("format") == "MPEG_4" and not s.get("videoOnly", False):
-                        print(f"Acquired direct stream via Piped instance: {base}")
+                        print(f"Fallback stream resolved via {base}")
                         return s.get("url")
         except Exception:
             continue
@@ -580,13 +579,13 @@ def download_clip_with_ytdlp(
                 cookie_file.write(cookie_data)
             os.chmod(cookie_path, 0o600)
         except (ValueError, OSError) as exc:
-            print(f"YOUTUBE_COOKIES_BASE64 configuration notice: {exc}")
+            print(f"Cookie notice: {exc}")
             cookie_path = None
 
     client_strategies = [
-        "youtube:player_client=ios,android",
+        "youtube:player_client=mweb,web",
+        "youtube:player_client=android",
         "youtube:player_client=tv",
-        "youtube:player_client=android_vr",
     ]
 
     try:
@@ -595,8 +594,7 @@ def download_clip_with_ytdlp(
                 sys.executable, "-m", "yt_dlp",
                 "--no-playlist",
                 "--no-warnings",
-                "--retries", "3",
-                "--fragment-retries", "3",
+                "--retries", "2",
                 "--extractor-args", client_arg,
                 "--user-agent", _BROWSER_UA,
                 "--download-sections", section,
