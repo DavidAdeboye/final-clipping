@@ -1,5 +1,6 @@
 import os
 import io
+import base64
 import json
 import random
 import re
@@ -571,29 +572,73 @@ def download_clip_with_ytdlp(
     start_seconds: int,
     end_seconds: int,
     output_path: str,
+    cookies_base64: str = "",
 ) -> bool:
     """Download only the requested section, letting yt-dlp handle YouTube changes."""
     section = f"*{start_seconds}-{end_seconds}"
-    command = [
+    cookie_path = None
+    base_command = [
         sys.executable, "-m", "yt_dlp",
         "--no-playlist",
         "--no-warnings",
+        "--retries", "3",
+        "--fragment-retries", "3",
+        "--retry-sleep", "fragment:exp=1:4",
         "--download-sections", section,
         "--force-keyframes-at-cuts",
         "--merge-output-format", "mp4",
         "--format", "bv*[ext=mp4]+ba[ext=m4a]/b[ext=mp4]/best",
         "--output", output_path,
-        video_url,
     ]
 
+    # Render and similar datacenter IPs are frequently challenged by YouTube.
+    # Store a Netscape cookies.txt file as a base64-encoded environment secret.
+    encoded_cookies = (cookies_base64 or os.getenv("YOUTUBE_COOKIES_BASE64", "")).strip()
+    if encoded_cookies:
+        cookie_path = output_path + ".cookies.txt"
+        try:
+            cookie_data = base64.b64decode(encoded_cookies, validate=True)
+            with open(cookie_path, "wb") as cookie_file:
+                cookie_file.write(cookie_data)
+            os.chmod(cookie_path, 0o600)
+            base_command.extend(["--cookies", cookie_path])
+        except (ValueError, OSError) as exc:
+            print(f"YOUTUBE_COOKIES_BASE64 configuration notice: {exc}")
+            cookie_path = None
+
+    youtube_proxy = os.getenv("YOUTUBE_PROXY", "").strip()
+    if youtube_proxy:
+        base_command.extend(["--proxy", youtube_proxy])
+
+    # Different public videos remain available through different official
+    # YouTube clients. Try a small set before falling back to public bridges.
+    client_attempts = (
+        None,
+        "youtube:player_client=android_vr",
+        "youtube:player_client=web_creator",
+    )
+
     try:
-        subprocess.run(command, check=True)
-        return os.path.isfile(output_path) and os.path.getsize(output_path) > 0
-    except (OSError, subprocess.CalledProcessError) as exc:
-        print(f"yt-dlp clip download notice: {exc}")
-        if os.path.exists(output_path):
-            os.remove(output_path)
+        for attempt_number, extractor_args in enumerate(client_attempts, start=1):
+            command = list(base_command)
+            if extractor_args:
+                command.extend(["--extractor-args", extractor_args])
+            command.append(video_url)
+
+            try:
+                subprocess.run(command, check=True)
+                if os.path.isfile(output_path) and os.path.getsize(output_path) > 0:
+                    return True
+            except (OSError, subprocess.CalledProcessError):
+                print(f"yt-dlp download attempt {attempt_number} failed")
+
+            if os.path.exists(output_path):
+                os.remove(output_path)
+
         return False
+    finally:
+        if cookie_path and os.path.exists(cookie_path):
+            os.remove(cookie_path)
 
 
 def process_clip(
@@ -602,7 +647,8 @@ def process_clip(
     index: int,
     job_dir: str,
     mode: str = "cut",
-    aspect_ratio: str = "9:16"
+    aspect_ratio: str = "9:16",
+    cookies_base64: str = ""
 ):
     clean_title = re.sub(r'[^a-zA-Z0-9]', '_', clip.title)[:25]
     clean_ratio = aspect_ratio.replace(':', '_')
@@ -620,6 +666,7 @@ def process_clip(
         clip.start_seconds,
         clip.start_seconds + duration,
         temp_raw,
+        cookies_base64=cookies_base64,
     )
 
     if not downloaded:
@@ -671,7 +718,8 @@ def run_pipeline(
     aspect_ratio: str = "9:16",
     mode: str = "cut",
     prompt_fn: Optional[Callable[[str], str]] = None,
-    job_id: Optional[str] = None
+    job_id: Optional[str] = None,
+    cookies_base64: str = ""
 ) -> str:
     sweep_expired_jobs()
 
@@ -689,6 +737,6 @@ def run_pipeline(
     highlight_data = find_viral_moments_direct(video_url)
 
     for idx, clip in enumerate(highlight_data.clips, start=1):
-        process_clip(video_url, clip, idx, job_dir, mode=mode, aspect_ratio=aspect_ratio)
+        process_clip(video_url, clip, idx, job_dir, mode=mode, aspect_ratio=aspect_ratio, cookies_base64=cookies_base64)
 
     return job_dir

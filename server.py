@@ -131,7 +131,7 @@ class WebPrompt:
         return self.ask(question)
 
 
-def _run_job(job: Job, youtube_url: str, aspect_ratio: str, mode: str):
+def _run_job(job: Job, youtube_url: str, aspect_ratio: str, mode: str, cookies_base64: str = ""):
     prompt_handler = WebPrompt(job)
     try:
         job.set_status("running")
@@ -140,7 +140,8 @@ def _run_job(job: Job, youtube_url: str, aspect_ratio: str, mode: str):
             aspect_ratio=aspect_ratio,
             mode=mode,
             prompt_fn=prompt_handler,
-            job_id=job.id
+            job_id=job.id,
+            cookies_base64=cookies_base64
         )
         job.result_dir = job_dir
         clips = sorted(
@@ -158,6 +159,8 @@ class StartJobRequest(BaseModel):
     aspect_ratio: str = "9:16"
     mode: str = "cut"
     client_id: Optional[str] = None
+    # Optional base64 Netscape cookies.txt, used only for this job and never persisted.
+    cookies_base64: Optional[str] = None
 
 
 @app.get("/favicon.ico", include_in_schema=False)
@@ -187,7 +190,7 @@ def create_job(req: StartJobRequest):
 
     t = threading.Thread(
         target=_run_job,
-        args=(job, req.youtube_url, req.aspect_ratio, req.mode),
+        args=(job, req.youtube_url, req.aspect_ratio, req.mode, (req.cookies_base64 or "")[:2_000_000]),
         daemon=True,
     )
     job.thread = t

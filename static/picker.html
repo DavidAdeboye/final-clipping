@@ -418,6 +418,11 @@ body {
             <div class="input-box">
               <input type="text" id="url" placeholder="Paste YouTube link here..." autocomplete="off">
             </div>
+            <details style="margin-top:12px;color:var(--text-dim);font-size:12px">
+              <summary>Optional: use your own temporary YouTube session</summary>
+              <p>Only paste a base64-encoded Netscape cookies.txt value. It is used for this job and deleted after processing. Do not use your main account.</p>
+              <div class="input-box"><input type="password" id="cookiesBase64" placeholder="Base64 cookies (optional)" autocomplete="off"></div>
+            </details>
 
             <div style="margin-top: 20px;">
               <label class="field-label">Output Aspect Ratio</label>
@@ -730,7 +735,8 @@ async function startJob() {
         youtube_url: url,
         aspect_ratio: getSelectedAspect(),
         mode: getSelectedMode(),
-        client_id: getClientId()
+        client_id: getClientId(),
+        cookies_base64: document.getElementById('cookiesBase64')?.value.trim() || null
       }),
     });
 
