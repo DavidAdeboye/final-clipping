@@ -236,14 +236,27 @@ def extract_captions(video_url: str, job_dir: str) -> str:
 
 
 def find_viral_moments_direct(video_url: str) -> HighlightResponse:
-    print("Analyzing YouTube video directly with Gemini for transcript & highlights...")
+    print("Fetching transcript to ensure robust highlight analysis...")
+
+    # 1. Retrieve the text directly to bypass multimodal URL ingest blocks
+    transcript_text = ""
+    try:
+        transcript_text = extract_captions(video_url, ".")
+    except Exception as e:
+        print(f"Caption retrieval warning: {e}. Falling back to URL prompt.")
+
+    if transcript_text:
+        content_payload = f"Here is the video transcript:\n\n{transcript_text[:25000]}"
+    else:
+        content_payload = f"Watch and analyze this YouTube video: {video_url}"
+
     client = genai.Client(api_key=os.environ.get("GEMINI_API_KEY"))
 
     prompt = f"""
     You are an expert short form video editor.
-    Watch and analyze this YouTube video: {video_url}
+    {content_payload}
 
-    Extract the transcript internally, identify the most engaging parts, and select the TOP 3 moments with the highest potential to perform well as standalone vertical clips (Shorts/TikTok/Reels).
+    Extract the most engaging segments and select the TOP 3 moments with the highest potential to perform well as standalone vertical clips (Shorts/TikTok/Reels).
 
     Strict Rules:
     1. Clip duration MUST be between 30 and 65 seconds.
@@ -255,29 +268,35 @@ def find_viral_moments_direct(video_url: str) -> HighlightResponse:
     """
 
     priority_models = [
-        "gemini-3.6-flash",
         "gemini-3.7-flash",
+        "gemini-3.6-flash",
+        "gemini-3.5-flash-lite",
+        "gemini-2.5-flash",
     ]
 
     for model_name in priority_models:
-        try:
-            print(f"Analyzing via: {model_name}...")
-            response = client.models.generate_content(
-                model=model_name,
-                contents=prompt,
-                config=types.GenerateContentConfig(
-                    response_mime_type="application/json",
-                    response_schema=HighlightResponse,
-                    temperature=0.2,
-                ),
-            )
-            return HighlightResponse.model_validate_json(response.text)
-        except Exception as e:
-            print(f"Model {model_name} error ({e}). Trying fallback...")
-            continue
+        for attempt in range(2):
+            try:
+                print(f"Analyzing via: {model_name} (attempt {attempt + 1})...")
+                response = client.models.generate_content(
+                    model=model_name,
+                    contents=prompt,
+                    config=types.GenerateContentConfig(
+                        response_mime_type="application/json",
+                        response_schema=HighlightResponse,
+                        temperature=0.2,
+                    ),
+                )
+                return HighlightResponse.model_validate_json(response.text)
+            except Exception as e:
+                err_str = str(e)
+                print(f"Model {model_name} error: {err_str}")
+                if "503" in err_str or "UNAVAILABLE" in err_str:
+                    time.sleep(2)
+                    continue
+                break
 
     raise RuntimeError("Failed to generate highlights with Gemini models.")
-
 
 def remove_silence(
     input_path: str,
