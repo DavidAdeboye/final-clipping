@@ -3,3 +3,6 @@ models/
 __pycache__/
 *.pyc
 .env
+uploads/
+*.mp4
+*.mkv

@@ -1,12 +1,15 @@
 import os
 import json
+import re
 import threading
 import time
 import traceback
 import uuid
+import shutil
+import subprocess
 from typing import Dict, Optional, List
 
-from fastapi import FastAPI, HTTPException, Request, Response
+from fastapi import FastAPI, HTTPException, Request, Response, UploadFile, File
 from fastapi.responses import HTMLResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -14,6 +17,8 @@ from pydantic import BaseModel
 import app as core
 
 app = FastAPI(title="AutoClip Studio")
+UPLOAD_ROOT = os.path.join(os.path.dirname(__file__), "uploads")
+os.makedirs(UPLOAD_ROOT, exist_ok=True)
 
 
 def _job_meta_path(job_id: str) -> str:
@@ -159,19 +164,39 @@ class StartJobRequest(BaseModel):
     aspect_ratio: str = "9:16"
     mode: str = "cut"
     client_id: Optional[str] = None
-    # Optional base64 Netscape cookies.txt, used only for this job and never persisted.
     cookies_base64: Optional[str] = None
+
+
+class ManualEditRequest(BaseModel):
+    filename: str
+    words: List[Dict]
+    aspect_ratio: str = "9:16"
+    mode: str = "cut"
 
 
 @app.get("/favicon.ico", include_in_schema=False)
 async def favicon():
-    svg = '''<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+    svg = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
       <defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#14171e"/><stop offset="1" stop-color="#07080a"/></linearGradient></defs>
       <rect width="512" height="512" rx="112" fill="url(#g)"/>
       <path d="M168 376 L232 144 C236 130 248 120 264 120 C280 120 292 130 296 144 L360 376 C364 390 354 404 340 404 C328 404 318 396 314 384 L294 312 L218 312 L198 384 C194 396 184 404 172 404 C158 404 148 390 152 376 Z" fill="#d7ff63"/>
       <path d="M256 196 L284 272 L228 272 Z" fill="#07080a"/>
-    </svg>'''
+    </svg>"""
     return Response(content=svg, media_type="image/svg+xml")
+
+
+@app.post("/upload-video")
+async def upload_video(file: UploadFile = File(...)):
+    if not file.filename:
+        raise HTTPException(400, "No file selected")
+
+    safe_name = re.sub(r"[^A-Za-z0-9._-]+", "_", os.path.basename(file.filename)) or "uploaded_video"
+    target_path = os.path.join(UPLOAD_ROOT, f"{uuid.uuid4()}_{safe_name}")
+
+    with open(target_path, "wb") as out_file:
+        shutil.copyfileobj(file.file, out_file)
+
+    return {"video_path": target_path}
 
 
 @app.post("/jobs")
@@ -278,6 +303,86 @@ def get_job(job_id: str):
     }
 
 
+@app.get("/jobs/{job_id}/clip-data/{filename}")
+def get_clip_metadata(job_id: str, filename: str):
+    job_dir = os.path.join(core.JOBS_ROOT, job_id)
+    base_name = os.path.splitext(filename)[0]
+    json_path = os.path.join(job_dir, f"{base_name}.json")
+
+    words = []
+    start_seconds = 0
+    end_seconds = 60
+    mode = "cut"
+    aspect_ratio = "9:16"
+
+    if os.path.exists(json_path):
+        with open(json_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+            words = data.get("words", [])
+            start_seconds = data.get("start_seconds", 0)
+            end_seconds = data.get("end_seconds", 60)
+            mode = data.get("mode", "cut")
+            aspect_ratio = data.get("aspect_ratio", "9:16")
+
+    return {
+        "job_id": job_id,
+        "filename": filename,
+        "video_url": f"/jobs/{job_id}/clip/{filename}",
+        "words": words,
+        "start_seconds": start_seconds,
+        "end_seconds": end_seconds,
+        "mode": mode,
+        "aspect_ratio": aspect_ratio
+    }
+
+
+@app.post("/jobs/{job_id}/re-render")
+def rerender_clip(job_id: str, req: ManualEditRequest):
+    job_dir = os.path.join(core.JOBS_ROOT, job_id)
+    base_name = os.path.splitext(req.filename)[0]
+    json_path = os.path.join(job_dir, f"{base_name}.json")
+    ass_path = os.path.join(job_dir, f"{base_name}_manual.ass")
+    final_output = os.path.join(job_dir, req.filename)
+    temp_retrack = os.path.join(job_dir, f"{base_name}_retrack.mp4")
+
+    if not os.path.exists(final_output):
+        raise HTTPException(404, "Original clip not found")
+
+    with open(json_path, "w", encoding="utf-8") as f:
+        json.dump({
+            "words": req.words,
+            "mode": req.mode,
+            "aspect_ratio": req.aspect_ratio
+        }, f, indent=2)
+
+    core.generate_animated_ass(req.words, ass_path)
+
+    try:
+        if req.aspect_ratio == "16:9":
+            escaped_ass = ass_path.replace("\\", "/").replace(":", r"\:")
+            cmd = [
+                "ffmpeg", "-y", "-i", final_output,
+                "-vf", f"ass={escaped_ass}",
+                "-c:v", "libx264", "-preset", "veryfast", "-crf", "18",
+                "-c:a", "copy",
+                temp_retrack
+            ]
+            subprocess.run(cmd, check=True)
+        else:
+            core.render_gimbal_tracked_video(final_output, temp_retrack, job_dir, mode=req.mode, aspect_ratio=req.aspect_ratio)
+            core.burn_ass_subtitles(temp_retrack, ass_path, final_output)
+
+        if os.path.exists(temp_retrack):
+            shutil.move(temp_retrack, final_output)
+    finally:
+        if os.path.exists(ass_path):
+            os.remove(ass_path)
+        if os.path.exists(temp_retrack):
+            os.remove(temp_retrack)
+
+    return {"ok": True, "clip_url": f"/jobs/{job_id}/clip/{req.filename}"}
+
+
 class RespondRequest(BaseModel):
     answer: str
 
@@ -360,6 +465,13 @@ def get_frame(job_id: str, filename: str):
 def index():
     picker_path = os.path.join(os.path.dirname(__file__), "static", "picker.html")
     with open(picker_path, "r", encoding="utf-8") as f:
+        return f.read()
+
+
+@app.get("/editor", response_class=HTMLResponse)
+def editor_page():
+    editor_path = os.path.join(os.path.dirname(__file__), "static", "editor.html")
+    with open(editor_path, "r", encoding="utf-8") as f:
         return f.read()
 
 

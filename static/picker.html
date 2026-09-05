@@ -302,9 +302,12 @@ body {
   font: 600 10px var(--font-mono); color: var(--amber); z-index: 2;
 }
 .expiry-dot { width: 5px; height: 5px; border-radius: 50%; background: var(--amber); }
-.clip-info { display: flex; justify-content: space-between; align-items: center; margin-top: 10px; }
-.clip-title { font: 11px var(--font-mono); color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 140px; }
-.btn-download { background: var(--signal); color: #11150f; font: 700 11px var(--font-sans); padding: 7px 13px; border-radius: 4px; text-decoration: none; }
+.clip-info { display: flex; justify-content: space-between; align-items: center; margin-top: 10px; gap: 6px; }
+.clip-title { font: 11px var(--font-mono); color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 90px; }
+.clip-actions { display: flex; align-items: center; gap: 6px; }
+.btn-edit { background: var(--panel-raised); border: 1px solid var(--border-strong); color: var(--text-primary); font: 700 11px var(--font-sans); padding: 7px 10px; border-radius: 4px; text-decoration: none; }
+.btn-edit:hover { border-color: var(--signal); color: var(--signal); }
+.btn-download { background: var(--signal); color: #11150f; font: 700 11px var(--font-sans); padding: 7px 11px; border-radius: 4px; text-decoration: none; }
 
 .projects-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(270px, 1fr)); gap: 16px; }
 .project-card {
@@ -411,10 +414,15 @@ body {
             <div class="card-title">Session Setup</div>
           </div>
           <div class="card-body">
-            <label class="field-label">Source URL</label>
+            <label class="field-label">Source URL or Local Video File</label>
             <div class="input-box">
               <input type="text" id="url" placeholder="Paste YouTube link here..." autocomplete="off">
             </div>
+            <div style="margin-top: 12px; display: grid; gap: 8px;">
+              <label class="field-label" style="margin:0;">Or upload a video from your computer</label>
+              <input type="file" id="videoUpload" accept="video/*" style="width:100%;color:var(--text-dim);">
+            </div>
+            <p style="margin:10px 0 0;color:var(--text-dim);font-size:12px;line-height:1.5;">You can paste a YouTube link, or upload a local video from any drive. Browser security does not allow direct access to arbitrary system paths, so choosing the file from your computer is the reliable option.</p>
             <details style="margin-top:12px;color:var(--text-dim);font-size:12px">
               <summary>Optional: use your own temporary YouTube session</summary>
               <p>Only paste a base64-encoded Netscape cookies.txt value. It is used for this job and deleted after processing. Do not use your main account.</p>
@@ -477,45 +485,12 @@ body {
                 </div>
 
                 <div class="mode-card">
-                  <input type="radio" name="mode" id="mode-speaker" value="speaker_switch">
-                  <label for="mode-speaker">
-                    <span class="mode-icon"><svg viewBox="0 0 40 40" fill="none" stroke="currentColor" stroke-width="2"><rect x="5" y="8" width="15" height="24" rx="2" opacity="0.95"/><rect x="20" y="8" width="15" height="24" rx="2" opacity="0.4"/><path d="M17 20h8m0 0l-3-3m3 3l-3 3"/></svg></span>
-                    <div>
-                      <div class="mode-header"><span class="mode-tag">AI VOICE</span><span class="mode-title">Dynamic Switch</span></div>
-                      <div class="mode-desc">Cuts back and forth automatically to frame whoever is currently talking.</div>
-                    </div>
-                  </label>
-                </div>
-
-                <div class="mode-card">
                   <input type="radio" name="mode" id="mode-gaming" value="gaming">
                   <label for="mode-gaming">
                     <span class="mode-icon"><svg viewBox="0 0 40 40" fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="6" width="32" height="28" rx="2"/><rect x="21" y="19" width="12" height="12" rx="1.5" fill="var(--panel)"/></svg></span>
                     <div>
                       <div class="mode-header"><span class="mode-tag">PIP</span><span class="mode-title">Gaming PIP</span></div>
                       <div class="mode-desc">Facecam placed on top of gameplay with custom box selection.</div>
-                    </div>
-                  </label>
-                </div>
-
-                <div class="mode-card">
-                  <input type="radio" name="mode" id="mode-gaming-noface" value="gaming_split_noface">
-                  <label for="mode-gaming-noface">
-                    <span class="mode-icon"><svg viewBox="0 0 40 40" fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="4" width="32" height="20" rx="2"/><rect x="4" y="27" width="32" height="9" rx="2"/></svg></span>
-                    <div>
-                      <div class="mode-header"><span class="mode-tag">HUD</span><span class="mode-title">Double Cut</span></div>
-                      <div class="mode-desc">Top section zooms on action while bottom section locks onto your hotbar/HUD.</div>
-                    </div>
-                  </label>
-                </div>
-
-                <div class="mode-card">
-                  <input type="radio" name="mode" id="mode-reaction" value="reaction">
-                  <label for="mode-reaction">
-                    <span class="mode-icon"><svg viewBox="0 0 40 40" fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="10" width="32" height="24" rx="2"/><circle cx="13" cy="10" r="6" fill="var(--panel)"/></svg></span>
-                    <div>
-                      <div class="mode-header"><span class="mode-tag">STREAM</span><span class="mode-title">Reaction Stream</span></div>
-                      <div class="mode-desc">Auto-tracks webcam reaction bubbles and stacks them above the main footage.</div>
                     </div>
                   </label>
                 </div>
@@ -546,19 +521,19 @@ body {
             <div class="pipeline-list">
               <div class="pipeline-step">
                 <div class="pipeline-num">01</div>
-                <div class="pipeline-copy"><strong>Transcribe</strong><span>Audio is pulled from the source and converted to text.</span></div>
+                <div class="pipeline-copy"><strong>Transcribe</strong><span>Faster-Whisper extracts word timestamps locally.</span></div>
               </div>
               <div class="pipeline-step">
                 <div class="pipeline-num">02</div>
-                <div class="pipeline-copy"><strong>Detect highlights</strong><span>The engine finds the moments most likely to hold attention.</span></div>
+                <div class="pipeline-copy"><strong>Detect highlights</strong><span>Gemini picks the most viral 30-60s moments.</span></div>
               </div>
               <div class="pipeline-step">
                 <div class="pipeline-num">03</div>
-                <div class="pipeline-copy"><strong>Track &amp; crop</strong><span>The camera work follows the action automatically.</span></div>
+                <div class="pipeline-copy"><strong>Track &amp; Captions</strong><span>Gimbal face-tracking and animated karaoke subtitles are burned in.</span></div>
               </div>
               <div class="pipeline-step">
                 <div class="pipeline-num">04</div>
-                <div class="pipeline-copy"><strong>Export</strong><span>Clips render in your chosen aspect ratio, ready to post.</span></div>
+                <div class="pipeline-copy"><strong>Interactive Edit</strong><span>Click Edit Clip to manually tweak text and framing anytime.</span></div>
               </div>
             </div>
           </div>
@@ -706,13 +681,62 @@ function getSelectedMode() {
   return el ? el.value : 'cut';
 }
 
+function isValidVideoSource(value) {
+  const trimmed = value.trim();
+  if (!trimmed) return false;
+
+  if (/^https?:\/\//i.test(trimmed)) return true;
+
+  if (/^(?:[a-zA-Z]:[\\/]|\\\\)/.test(trimmed)) return true;
+
+  if (/^(?:[A-Za-z0-9_\-.]+\/|\.[\\/])/.test(trimmed)) return true;
+
+  return false;
+}
+
+async function uploadSelectedVideo() {
+  const fileInput = document.getElementById('videoUpload');
+  const selectedFile = fileInput && fileInput.files && fileInput.files[0];
+  if (!selectedFile) return null;
+
+  const formData = new FormData();
+  formData.append('file', selectedFile);
+
+  const uploadRes = await fetch('/upload-video', {
+    method: 'POST',
+    body: formData,
+  });
+
+  if (!uploadRes.ok) {
+    const err = await uploadRes.json().catch(() => ({}));
+    throw new Error(err.detail || 'Video upload failed');
+  }
+
+  const data = await uploadRes.json();
+  return data.video_path;
+}
+
 async function startJob() {
-  const url = document.getElementById('url').value.trim();
-  if (!url) {
-    updateStatusUI('Paste a valid YouTube link first');
+  const textUrl = document.getElementById('url').value.trim();
+  let sourceUrl = textUrl;
+
+  try {
+    if (document.getElementById('videoUpload')?.files?.length) {
+      updateStatusUI('Uploading selected video...');
+      sourceUrl = await uploadSelectedVideo();
+    }
+
+    if (!sourceUrl || !isValidVideoSource(sourceUrl)) {
+      updateStatusUI('Paste a valid YouTube link or choose a local video file first');
+      setMonitor('error', 'ERR');
+      return;
+    }
+  } catch (e) {
+    updateStatusUI('Upload error: ' + e.message);
     setMonitor('error', 'ERR');
     return;
   }
+
   document.getElementById('startBtn').disabled = true;
   renderedClips.clear();
   document.getElementById('clips-list').innerHTML = '';
@@ -729,7 +753,7 @@ async function startJob() {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        youtube_url: url,
+        youtube_url: sourceUrl,
         aspect_ratio: getSelectedAspect(),
         mode: getSelectedMode(),
         client_id: getClientId(),
@@ -930,7 +954,10 @@ function appendNewClips(clips, createdAt = Date.now()) {
       </div>
       <div class="clip-info">
         <div class="clip-title" title="${rawName}">Clip 0${clipIndex}</div>
-        <a href="${url}" download="${rawName}" class="btn-download">Download</a>
+        <div class="clip-actions">
+          <a href="/editor?job_id=${jobId}&clip=${rawName}" class="btn-edit">Edit</a>
+          <a href="${url}" download="${rawName}" class="btn-download">Download</a>
+        </div>
       </div>
     `;
     target.appendChild(card);

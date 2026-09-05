@@ -1,0 +1,191 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AutoClip · Manual Editor</title>
+<link rel="icon" type="image/svg+xml" href="/favicon.ico">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com">
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet">
+<script src="https://cdn.tailwindcss.com"></script>
+<style>
+:root {
+  --bg: #101210;
+  --panel: #171a17;
+  --border: #2a302a;
+  --signal: #c7f36a;
+}
+body { background: var(--bg); color: #f0f2ec; font-family: 'DM Sans', sans-serif; }
+.word-tag {
+  background: #1e241e;
+  border: 1px solid var(--border);
+  padding: 4px 8px;
+  border-radius: 4px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  transition: all 0.15s ease;
+}
+.word-tag:hover, .word-tag.active { border-color: var(--signal); background: rgba(199, 243, 106, 0.15); }
+.word-edit { outline: none; background: transparent; color: #fff; font-weight: 600; }
+.word-delete { color: #ff3b44; cursor: pointer; font-size: 11px; }
+</style>
+</head>
+<body class="h-screen flex flex-col overflow-hidden">
+
+<header class="h-14 border-b border-[#2a302a] flex items-center justify-between px-6 bg-[#171a17]">
+  <div class="flex items-center gap-3">
+    <a href="/" class="text-xs font-mono text-gray-400 hover:text-white">&larr; Back to Studio</a>
+    <span class="text-gray-600">|</span>
+    <strong class="text-sm font-bold text-[#c7f36a]">Interactive Clip Editor</strong>
+  </div>
+  <button id="reRenderBtn" onclick="saveAndReRender()" class="bg-[#c7f36a] text-black text-xs font-bold px-4 py-2 rounded hover:brightness-110">
+    Apply Changes &amp; Re-Render
+  </button>
+</header>
+
+<div class="flex-1 flex overflow-hidden">
+  <div class="w-1/2 border-r border-[#2a302a] p-8 flex flex-col items-center justify-center bg-black/40">
+    <div class="relative w-[300px] h-[533px] bg-black rounded-lg overflow-hidden border border-[#2a302a] shadow-2xl">
+      <video id="videoPlayer" class="w-full h-full object-cover" controls playsinline preload="metadata">
+        <source id="videoSource" src="" type="video/mp4">
+      </video>
+    </div>
+
+    <div class="flex items-center gap-3 mt-6">
+      <label class="text-xs font-mono text-gray-400">Framing Mode:</label>
+      <select id="modeSelect" class="bg-[#171a17] border border-[#2a302a] text-xs text-white rounded px-3 py-1.5 outline-none">
+        <option value="cut">Tracking Crop (Solo)</option>
+        <option value="split">Split Stack (Podcast)</option>
+      </select>
+    </div>
+  </div>
+
+  <div class="w-1/2 p-8 flex flex-col overflow-y-auto">
+    <div class="flex justify-between items-center mb-4">
+      <div>
+        <h2 class="text-sm font-bold uppercase tracking-wider text-gray-400">Word-Level Captions</h2>
+        <p class="text-xs text-gray-500 mt-1">Click a word to seek video. Edit text inline or click &times; to remove.</p>
+      </div>
+      <button onclick="addWord()" class="text-xs font-mono text-[#c7f36a] border border-[#c7f36a]/30 px-2.5 py-1 rounded hover:bg-[#c7f36a]/10">+ Add Word</button>
+    </div>
+
+    <div id="wordsContainer" class="flex flex-wrap gap-2.5 p-4 rounded-lg bg-[#171a17] border border-[#2a302a] min-h-[220px]">
+      <div class="text-xs text-gray-500">Loading words transcript...</div>
+    </div>
+  </div>
+</div>
+
+<script>
+const urlParams = new URLSearchParams(window.location.search);
+const jobId = urlParams.get('job_id');
+const filename = urlParams.get('clip');
+
+let wordsList = [];
+let currentAspect = '9:16';
+
+async function initEditor() {
+  if (!jobId || !filename) {
+    alert('Missing job_id or clip parameter');
+    return;
+  }
+
+  const res = await fetch(`/jobs/${jobId}/clip-data/${filename}`);
+  const data = await res.json();
+
+  document.getElementById('videoPlayer').src = data.video_url;
+  document.getElementById('modeSelect').value = data.mode || 'cut';
+  currentAspect = data.aspect_ratio || '9:16';
+  wordsList = data.words || [];
+
+  renderWords();
+}
+
+function renderWords() {
+  const container = document.getElementById('wordsContainer');
+  container.innerHTML = '';
+
+  if (wordsList.length === 0) {
+    container.innerHTML = '<div class="text-xs text-gray-500">No word data found for this clip.</div>';
+    return;
+  }
+
+  wordsList.forEach((w, index) => {
+    const el = document.createElement('div');
+    el.className = 'word-tag';
+
+    const input = document.createElement('span');
+    input.className = 'word-edit';
+    input.contentEditable = true;
+    input.textContent = w.word;
+    input.onblur = (e) => { wordsList[index].word = e.target.textContent.trim(); };
+    input.onclick = (e) => {
+      e.stopPropagation();
+      const vid = document.getElementById('videoPlayer');
+      vid.currentTime = w.start;
+      vid.play();
+    };
+
+    const del = document.createElement('span');
+    del.className = 'word-delete';
+    del.innerHTML = '&times;';
+    del.title = 'Remove word';
+    del.onclick = (e) => {
+      e.stopPropagation();
+      wordsList.splice(index, 1);
+      renderWords();
+    };
+
+    el.appendChild(input);
+    el.appendChild(del);
+    container.appendChild(el);
+  });
+}
+
+function addWord() {
+  const vid = document.getElementById('videoPlayer');
+  const now = parseFloat(vid.currentTime.toFixed(2));
+  wordsList.push({
+    word: "NEW",
+    start: now,
+    end: parseFloat((now + 0.4).toFixed(2))
+  });
+  wordsList.sort((a, b) => a.start - b.start);
+  renderWords();
+}
+
+async function saveAndReRender() {
+  const btn = document.getElementById('reRenderBtn');
+  btn.disabled = true;
+  btn.textContent = 'Rendering...';
+
+  const mode = document.getElementById('modeSelect').value;
+
+  try {
+    const res = await fetch(`/jobs/${jobId}/re-render`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        filename: filename,
+        words: wordsList,
+        mode: mode,
+        aspect_ratio: currentAspect
+      })
+    });
+
+    if (!res.ok) throw new Error('Failed to re-render clip');
+    alert('Clip re-rendered successfully!');
+    window.location.reload();
+  } catch (err) {
+    alert(err.message);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Apply Changes & Re-Render';
+  }
+}
+
+initEditor();
+</script>
+</body>
+</html>
